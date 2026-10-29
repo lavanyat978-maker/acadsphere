@@ -1,0 +1,56 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: praxis
+      POSTGRES_USER: praxis
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - praxis_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U praxis -d praxis"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [praxis]
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://praxis:${POSTGRES_PASSWORD}@db:5432/praxis
+      STORAGE_BACKEND: local
+      STORAGE_LOCAL_PATH: /data/storage
+      CORS_ORIGINS: http://localhost:8080
+      GEN_INLINE: "true"
+    volumes:
+      - praxis_storage:/data/storage
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    networks: [praxis]
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    networks: [praxis]
+
+volumes:
+  praxis_pgdata:
+  praxis_storage:
+
+networks:
+  praxis:
+    driver: bridge

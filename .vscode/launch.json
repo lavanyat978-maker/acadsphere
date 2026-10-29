@@ -1,0 +1,93 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "API: uvicorn (reload, :8000)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["app.main:app", "--reload", "--port", "8000", "--host", "127.0.0.1"],
+      "cwd": "${workspaceFolder}/backend",
+      "envFile": "${workspaceFolder}/.env",
+      "justMyCode": false,
+      "console": "integratedTerminal",
+      "presentation": { "group": "1-backend" }
+    },
+    {
+      "name": "API: uvicorn + FastAPI debug (breakpoints, :8000)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["app.main:app", "--port", "8000", "--host", "127.0.0.1"],
+      "cwd": "${workspaceFolder}/backend",
+      "envFile": "${workspaceFolder}/.env",
+      "justMyCode": true,
+      "console": "integratedTerminal",
+      "presentation": { "group": "1-backend" }
+    },
+    {
+      "name": "DB: alembic upgrade head",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "alembic",
+      "args": ["upgrade", "head"],
+      "cwd": "${workspaceFolder}/backend",
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal",
+      "presentation": { "group": "2-maintenance" }
+    },
+    {
+      "name": "DB: seed demo institution",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "app.seed",
+      "cwd": "${workspaceFolder}/backend",
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal",
+      "presentation": { "group": "2-maintenance" }
+    },
+    {
+      "name": "Tests: backend pytest",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["-q"],
+      "cwd": "${workspaceFolder}/backend",
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal",
+      "presentation": { "group": "3-testing" }
+    },
+    {
+      "name": "Web: Vite dev server (:3001)",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "npm",
+      "args": ["run", "dev"],
+      "cwd": "${workspaceFolder}/frontend",
+      "console": "integratedTerminal",
+      "serverReadyAction": {
+        "pattern": "Local:.*?(https?://\\S+)",
+        "uriFormat": "%s",
+        "action": "openExternally"
+      },
+      "presentation": { "group": "4-frontend" }
+    },
+    {
+      "name": "Web: typecheck + production build",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "npm",
+      "args": ["run", "build"],
+      "cwd": "${workspaceFolder}/frontend",
+      "console": "integratedTerminal",
+      "presentation": { "group": "4-frontend" }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "▶ Full stack (API + Vite)",
+      "configurations": ["API: uvicorn (reload, :8000)", "Web: Vite dev server (:3001)"],
+      "stopAll": true
+    }
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "setup: create .env",
+      "type": "shell",
+      "command": "test -f .env || cp .env.example .env",
+      "windows": {
+        "command": "if (-not (Test-Path .env)) { Copy-Item .env.example .env }"
+      },
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "setup: create python venv",
+      "type": "shell",
+      "command": "python3 -m venv .venv && .venv/bin/python -m pip install --upgrade pip && .venv/bin/python -m pip install -r backend/requirements-dev.txt",
+      "windows": {
+        "command": "py -3 -m venv .venv; .venv\\Scripts\\python -m pip install --upgrade pip; .venv\\Scripts\\python -m pip install -r backend\\requirements-dev.txt"
+      },
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "setup: install frontend deps",
+      "type": "shell",
+      "command": "npm ci",
+      "options": { "cwd": "${workspaceFolder}/frontend" },
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "backend: migrate",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m alembic upgrade head",
+      "windows": { "command": "${workspaceFolder}\\.venv\\Scripts\\python -m alembic upgrade head" },
+      "options": { "cwd": "${workspaceFolder}/backend" },
+      "problemMatcher": [],
+      "group": "test"
+    },
+    {
+      "label": "backend: seed demo data",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m app.seed",
+      "windows": { "command": "${workspaceFolder}\\.venv\\Scripts\\python -m app.seed" },
+      "options": { "cwd": "${workspaceFolder}/backend" },
+      "problemMatcher": [],
+      "group": "test"
+    },
+    {
+      "label": "backend: reset dev database",
+      "type": "shell",
+      "command": "rm -f var/app.db var/app.db-shm var/app.db-wal && ${workspaceFolder}/.venv/bin/python -m alembic upgrade head && ${workspaceFolder}/.venv/bin/python -m app.seed",
+      "windows": {
+        "command": "Remove-Item var\\app.db, var\\app.db-shm, var\\app.db-wal -ErrorAction SilentlyContinue; & ${workspaceFolder}\\.venv\\Scripts\\python -m alembic upgrade head; & ${workspaceFolder}\\.venv\\Scripts\\python -m app.seed"
+      },
+      "options": { "cwd": "${workspaceFolder}/backend" },
+      "problemMatcher": [],
+      "group": "test"
+    },
+    {
+      "label": "backend: test",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m pytest -q",
+      "windows": { "command": "${workspaceFolder}\\.venv\\Scripts\\python -m pytest -q" },
+      "options": { "cwd": "${workspaceFolder}/backend" },
+      "problemMatcher": [],
+      "group": "test"
+    },
+    {
+      "label": "frontend: build",
+      "type": "shell",
+      "command": "npm run build",
+      "options": { "cwd": "${workspaceFolder}/frontend" },
+      "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true }
+    }
+  ]
+}

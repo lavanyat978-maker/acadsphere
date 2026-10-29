@@ -1,0 +1,37 @@
+# Secrets — never commit
+.env
+.env.local
+.env.*.local
+backend/.env
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Runtime data
+backend/var/
+backend/.data/
+*.db
+*.db-shm
+*.db-wal
+*.log
+# Anchored: only a top-level runtime `storage/`. An unanchored `storage/`
+# matched backend/app/storage/ too, which hid real source from git and broke
+# fresh clones with ModuleNotFoundError: No module named 'app.storage'.
+/storage/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+.idea/
+# .vscode/ is committed on purpose: launch/tasks configs make the project
+# runnable from VS Code after a clone. Keep personal edits out of it.
