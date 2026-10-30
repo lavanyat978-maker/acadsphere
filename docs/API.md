@@ -18,6 +18,9 @@ Errors use one envelope everywhere:
 { "error": "SUBJECT_NOT_ASSIGNED", "message": "You are not assigned to this subject.", "details": null }
 ```
 
+Every API route shares a per-client budget (`RATE_LIMIT_GENERAL`/min); AI generation
+(`RATE_LIMIT_GENERATION`) and syllabus uploads (`RATE_LIMIT_UPLOAD`) have their own.
+
 `401` unauthenticated · `403` forbidden (role, subject, ownership, MFA, or
 `PASSWORD_CHANGE_REQUIRED`) · `409` conflict or illegal state · `422` validation (`details`
 lists fields) · `423` account locked · `429` rate limited (`Retry-After` header).
@@ -95,15 +98,15 @@ The first HOD is created on the server: `python -m app.cli create-user --role HO
 | GET | `/practice/tests/{id}` | student | Test with questions, no answers (enrolled, published) |
 | GET | `/practice/staff/tests` | staff | Own tests plus every test in assigned subjects; `can_edit` per row |
 | GET | `/practice/staff/tests/{id}` | staff (S) | Test with answers |
-| POST | `/practice/tests` | staff (S) | Create a draft (optionally with questions) |
-| PATCH | `/practice/tests/{id}` | staff (O) | Edit title, description, duration |
+| POST | `/practice/tests` | staff (S) | Create a draft (optionally with questions, `opens_at`, `closes_at`, `max_attempts`) |
+| PATCH | `/practice/tests/{id}` | staff (O) | Edit title, description, duration (locked once a published set has attempts) and the schedule (always; `null` clears) |
 | POST | `/practice/tests/{id}/status` | staff (O) | DRAFT ⇄ PUBLISHED ⇄ ARCHIVED; back to DRAFT only without attempts |
 | POST | `/practice/tests/{id}/questions` | staff (O) | Add questions (draft only) |
 | PUT | `/practice/tests/{id}/questions/{qid}` | staff (O) | Replace a question (draft only) |
 | DELETE | `/practice/tests/{id}/questions/{qid}` | staff (O) | Delete a question (draft only) |
 | POST | `/practice/tests/{id}/generate` | staff (O) | Generate MCQs from the syllabus (draft only) |
 | GET | `/practice/tests/{id}/analytics` | staff (S) | Cohort performance per topic and per student |
-| POST | `/practice/tests/{id}/attempts` | student | Start, or resume the open attempt (returns `saved_answers`) |
+| POST | `/practice/tests/{id}/attempts` | student | Start, or resume the open attempt (returns `saved_answers`). `409 TEST_NOT_OPEN` / `TEST_CLOSED` / `ATTEMPT_LIMIT_REACHED` |
 | GET | `/practice/attempts/{id}` | student | Own attempt; closes it if the deadline passed |
 | PUT | `/practice/attempts/{id}/answers` | student | Autosave answers (`409 ATTEMPT_EXPIRED` after the deadline) |
 | POST | `/practice/attempts/{id}/submit` | student | Grade and close; late submissions are graded from the autosave |
@@ -148,7 +151,7 @@ The first HOD is created on the server: `python -m app.cli create-user --role HO
 | --- | --- | --- | --- |
 | GET | `/analytics/dashboard` | any | Role-aware dashboard; the HOD's includes `department` per-subject and per-teacher rollups |
 | GET | `/analytics/student` | student, HOD | Own analytics (HOD: department dashboard) |
-| GET | `/analytics/student/{id}` | own student, HOD | Per-student analytics |
+| GET | `/analytics/student/{id}` | own student, HOD | Per-student analytics, including who the student is |
 
 ## Audit (HOD)
 
