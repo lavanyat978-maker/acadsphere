@@ -48,8 +48,9 @@ Create an API key in Google AI Studio. Pick the chat and embedding model ids fro
 | `LLM_PROVIDER` | `openai` (means "OpenAI-compatible API") |
 | `LLM_API_KEY` | Gemini key |
 | `LLM_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai` |
-| `LLM_MODEL` | Gemini chat model id |
-| `EMBEDDING_MODEL` | Gemini embedding model id |
+| `LLM_MODEL` | `gemini-2.5-flash` (pin a stable id; avoid `-latest` and `preview`) |
+| `EMBEDDING_MODEL` | `gemini-embedding-001` |
+| `EMBEDDING_API_DIMENSIONS` | `768` (decide once: changing it later means re-embedding everything) |
 | `STORAGE_BACKEND` | `s3` |
 | `S3_BUCKET` / `S3_ENDPOINT_URL` / `S3_REGION` | from Supabase |
 | `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | from Supabase |

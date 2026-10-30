@@ -58,3 +58,37 @@ def test_s3_server_side_encryption_is_opt_in(s3: S3Storage, monkeypatch):
 def test_check_command_reports_pass_and_fail(capsys):
     assert cli_main(["check", "--only", "database"]) == 0
     assert "PASS  database" in capsys.readouterr().out
+
+
+def _capture_embedding_request(monkeypatch):
+    import httpx
+
+    from app.ai import embedder
+
+    sent: dict = {}
+
+    class _Client:
+        def __init__(self, *args, **kwargs): ...
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+
+        def post(self, url, headers=None, json=None):
+            sent["json"] = json
+            request = httpx.Request("POST", url)
+            return httpx.Response(200, json={"data": [{"index": 0, "embedding": [0.1, 0.2]}]}, request=request)
+
+    monkeypatch.setattr(embedder.httpx, "Client", _Client)
+    monkeypatch.setattr(settings, "LLM_API_KEY", "test-key")
+    monkeypatch.setattr(settings, "LLM_BASE_URL", "https://example.test/v1")
+    return embedder.OpenAIEmbedder(), sent
+
+
+def test_embedding_dimensions_are_sent_only_when_configured(monkeypatch):
+    monkeypatch.setattr(settings, "EMBEDDING_API_DIMENSIONS", 0)
+    embedder, sent = _capture_embedding_request(monkeypatch)
+    embedder.embed(["a"])
+    assert "dimensions" not in sent["json"]
+
+    monkeypatch.setattr(settings, "EMBEDDING_API_DIMENSIONS", 768)
+    embedder.embed(["a"])
+    assert sent["json"]["dimensions"] == 768

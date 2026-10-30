@@ -77,7 +77,12 @@ class Settings(BaseSettings):
     LLM_TIMEOUT_SECONDS: int = 60
     EMBEDDING_PROVIDER: Literal["auto", "openai", "local"] = "auto"
     EMBEDDING_MODEL: str = "text-embedding-3-small"
-    EMBEDDING_DIM: int = 256
+    EMBEDDING_DIM: int = 256  # size of the built-in demo embedder's vectors
+    # Vector size to request from the embedding API (`dimensions`). 0 sends
+    # nothing, so the model returns its default. Gemini embeddings default to
+    # 3072 numbers per text; 768 keeps stored vectors small. Changing this on a
+    # live database needs a re-embed: old and new vectors do not compare.
+    EMBEDDING_API_DIMENSIONS: int = Field(default=0, ge=0)
     AI_MAX_RETRIES: int = 3
     AI_TEMPERATURE: float = 0.4
 
