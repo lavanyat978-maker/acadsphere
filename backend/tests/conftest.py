@@ -270,7 +270,9 @@ def secured_paper(client, tokens, seeded):
     with session_scope() as db:
         record = db.get(InternalExam, exam["id"])
         assert record is not None
-        assert record.status == ExamStatus.SECURED, record.status
+        assert record.status == ExamStatus.SECURED, client.get(
+            f"/api/exams/{exam['id']}/generation", headers=tokens["teacher"]
+        ).json()
         config = db.execute(
             __import__("sqlalchemy").select(ExamConfiguration).where(
                 ExamConfiguration.exam_id == exam["id"]
