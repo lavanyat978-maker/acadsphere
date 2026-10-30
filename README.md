@@ -101,6 +101,12 @@ npm ci
 npm run dev                                   # http://localhost:3001, proxies /api to :8000
 ```
 
+## Deploying
+
+Merging `master` into `main` deploys: tests, a Docker image in GHCR (latest 3 kept), the API on
+Railway, the SPA on Vercel, Supabase for Postgres and file storage, Gemini for generation.
+Setup, secrets and verification steps are in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
 ## Running from VS Code
 
 The workspace ships `.vscode/` configuration, so nothing needs to be typed into a
@@ -169,7 +175,7 @@ validation refuses to start with the mock provider.
 ## Tests
 
 ```bash
-cd backend && .venv/bin/python -m pytest        # 68 API + service tests
+cd backend && .venv/bin/python -m pytest        # 75 API + service tests
 TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost/praxis_test .venv/bin/python -m pytest   # same suite on PostgreSQL
 cd frontend && npm test && npm run build        # unit tests, typecheck + production build
 cd e2e && npm run all                            # browser walkthrough of every role, recorded as videos

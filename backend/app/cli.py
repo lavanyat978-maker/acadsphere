@@ -1,6 +1,7 @@
 """Operator commands that must work without a signed-in HOD.
 
     python -m app.cli create-user --role HOD --email hod@college.edu --name "Dr. A. Rao"
+    python -m app.cli check [--only database|storage|llm]
 
 Creating the first HOD is the only way into a fresh production deployment:
 there is no self-registration. The account gets a temporary password (printed
@@ -54,6 +55,71 @@ def _create_user(args: argparse.Namespace) -> int:
     return 0
 
 
+def _check_database() -> None:
+    from sqlalchemy import text
+
+    with session_scope() as db:
+        db.execute(text("select 1"))
+
+
+def _check_storage() -> None:
+    from app.storage.backend import get_storage
+
+    storage = get_storage()
+    key = "healthcheck/praxis-check.bin"
+    storage.put(key, b"praxis")
+    try:
+        if storage.get(key) != b"praxis":
+            raise RuntimeError("stored bytes did not read back identically")
+    finally:
+        storage.delete(key)
+
+
+def _check_llm() -> None:
+    from app.ai.embedder import get_embedder
+    from app.ai.provider import build_provider
+
+    context = [
+        {
+            "content": (
+                "A database transaction groups several operations into one unit of work. "
+                "Atomicity means either every operation in the transaction takes effect or none does. "
+                "Isolation keeps concurrent transactions from seeing each other's partial changes."
+            ),
+            "document_name": "check",
+        }
+    ]
+    questions = build_provider().generate_practice_questions(
+        subject="Databases", topics=["Transactions"], count=2, difficulty="MEDIUM", context=context
+    )
+    if not questions:
+        raise RuntimeError("the model returned no questions")
+    vectors = get_embedder().embed(["transaction atomicity", "isolation level"])
+    if len(vectors) != 2 or not vectors[0]:
+        raise RuntimeError("the embedding call returned no vectors")
+
+
+def _check(args: argparse.Namespace) -> int:
+    """Exercise the external services using the current environment.
+
+    Prints only pass/fail and the error type, never keys or connection strings.
+    """
+    from app.core.config import settings
+
+    print(f"ENV={settings.ENV} demo_mode={settings.DEMO_MODE} ai_mode={settings.ai_mode} storage={settings.STORAGE_BACKEND}")
+    checks = {"database": _check_database, "storage": _check_storage, "llm": _check_llm}
+    selected = [args.only] if args.only else list(checks)
+    failed = 0
+    for name in selected:
+        try:
+            checks[name]()
+            print(f"PASS  {name}")
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            print(f"FAIL  {name}: {type(exc).__name__}: {str(exc)[:200]}")
+    return 1 if failed else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.cli", description="Praxis operator commands")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -67,9 +133,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Type a password instead of generating a temporary one",
     )
+    check = commands.add_parser(
+        "check", help="Test the database, file storage and AI provider with the current environment"
+    )
+    check.add_argument("--only", choices=["database", "storage", "llm"])
     args = parser.parse_args(argv)
     if args.command == "create-user":
         return _create_user(args)
+    if args.command == "check":
+        return _check(args)
     return 2
 
 

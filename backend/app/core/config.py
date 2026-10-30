@@ -27,6 +27,8 @@ class Settings(BaseSettings):
 
     APP_NAME: str = "Praxis Secure Assessment Platform"
     APP_VERSION: str = "1.0.0"
+    # Commit the running image was built from; set by the deploy pipeline.
+    GIT_SHA: str = "dev"
     ENV: Literal["development", "test", "production"] = "development"
     API_PREFIX: str = "/api"
     DEBUG: bool = False
@@ -88,6 +90,10 @@ class Settings(BaseSettings):
     S3_REGION: str = "us-east-1"
     S3_ACCESS_KEY_ID: str = ""
     S3_SECRET_ACCESS_KEY: str = ""
+    # Papers are already AES-256-GCM encrypted before they reach storage, so
+    # provider-side encryption is optional. Set to "AES256" on AWS S3; leave
+    # empty for S3-compatible stores (Supabase Storage) that reject the header.
+    S3_SERVER_SIDE_ENCRYPTION: str = ""
 
     # --- Uploads ----------------------------------------------------------
     MAX_UPLOAD_MB: int = 15
@@ -185,17 +191,24 @@ class Settings(BaseSettings):
             raise RuntimeError("Insecure production configuration: " + "; ".join(problems))
 
 
+def normalize_database_url(url: str) -> str:
+    """Point bare Postgres URLs at the psycopg 3 driver this app ships.
+
+    Supabase and Railway hand out `postgresql://` or `postgres://`; SQLAlchemy
+    would then look for psycopg2, which is not installed.
+    """
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix):]
+    return url
+
+
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
     # Managed Postgres providers (Render, Fly, Railway, Heroku) hand out URLs as
     # `postgres://user:pass@host/db`; SQLAlchemy needs its explicit psycopg URL.
-    if settings.DATABASE_URL.startswith("postgres://"):
-        object.__setattr__(
-            settings,
-            "DATABASE_URL",
-            settings.DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1),
-        )
+    object.__setattr__(settings, "DATABASE_URL", normalize_database_url(settings.DATABASE_URL))
     if settings.ENV == "production":
         settings.validate_for_production()
     if settings.DATABASE_URL.startswith("sqlite"):
