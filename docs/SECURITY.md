@@ -82,8 +82,8 @@ apply its own, more permissive, header handling.
   user enrols a new one at the next sign-in.
 - Demo helpers (`/auth/mfa/challenge-code`, `/auth/mfa/demo-code`) return the current code
   only while `DEMO_MODE=true`; production refuses to boot in demo mode.
-- Known limitation: codes are not recorded as used, so an intercepted code can be replayed
-  within its 30-90 s validity. Add a last-used-step column before high-stakes deployment.
+- Codes are **single use**: the accepted time-step is stored (`users.mfa_last_step`) and any
+  code from that step or earlier is refused, so an intercepted code cannot be replayed.
 
 ## CSRF and CORS
 
@@ -192,7 +192,6 @@ exam paper is never generated ungrounded.
 5. `SEED_ON_STARTUP=false`; create the first HOD with `python -m app.cli create-user`.
 6. Set `CORS_ORIGINS` to the deployed origin only; terminate TLS in front of the app.
 7. Set `TRUSTED_PROXY_COUNT` to the exact number of proxies in front of the API.
-8. Add the TOTP replay guard described above.
-9. Ship `audit_logs` to append-only/WORM storage so the in-app chain is not the only copy.
-10. Run a single API process while `GEN_INLINE=true` (generation runs in-process and the
+8. Ship `audit_logs` to append-only/WORM storage so the in-app chain is not the only copy.
+9. Run a single API process while `GEN_INLINE=true` (generation runs in-process and the
     in-memory rate limiter is per process); move generation to a worker before scaling out.

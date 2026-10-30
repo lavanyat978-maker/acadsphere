@@ -322,6 +322,20 @@ class DemoProvider(LLMProvider):
             "note": "Heuristic demo assessment - not a real model judgement.",
         }
 
+    def _stem(self, subject: str, topic: str, anchor: str, index: int) -> str:
+        """A question stem naming the concept the anchor sentence is about.
+
+        Stems must differ: practice tests drop questions whose text repeats.
+        """
+        focus = (self._keywords(anchor, 1) or [topic.lower()])[0]
+        templates = [
+            "In {topic}, which statement about {focus} is correct?",
+            "Which of the following correctly describes {focus} ({topic})?",
+            "According to the {subject} syllabus, what is true of {focus}?",
+            "Select the accurate statement about {focus} in {topic}.",
+        ]
+        return templates[index % len(templates)].format(topic=topic, focus=focus, subject=subject)
+
     @staticmethod
     def _swap_term(sentence: str, term: str, replacement: str) -> str:
         pattern = re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
@@ -347,17 +361,20 @@ class DemoProvider(LLMProvider):
         from elsewhere in the syllabus, so they read plausibly but are false.
         The correct option's position is spread across a-d.
         """
-        sentences = [s for s in self._sentences(context) if 60 <= len(s) <= 240]
+        sentences = [s for s in self._sentences(context) if 50 <= len(s) <= 260]
         vocabulary = sorted({word for sentence in sentences for word in self._keywords(sentence, 12)})
         questions: list[dict[str, Any]] = []
-        used: set[str] = set()
-        for index in range(count * 3):
-            if len(questions) >= count or not sentences:
+        # Walk every sentence once, in a stable topic-dependent order, so the
+        # requested count is reached whenever the material allows it.
+        candidates = [
+            (topics[index % len(topics)] if topics else subject, sentence)
+            for index, sentence in enumerate(
+                sorted(sentences, key=lambda item: self._stable(f"{'|'.join(topics)}|{item}"))
+            )
+        ]
+        for topic, anchor in candidates:
+            if len(questions) >= count:
                 break
-            topic = topics[index % len(topics)] if topics else subject
-            anchor = sentences[self._stable(f"{topic}|{index}") % len(sentences)]
-            if anchor in used:
-                continue
             terms = [term for term in self._keywords(anchor, 6) if term.lower() not in topic.lower()]
             alternatives = [word for word in vocabulary if word not in anchor.lower()]
             distractors: list[str] = []
@@ -370,7 +387,6 @@ class DemoProvider(LLMProvider):
                     distractors.append(altered)
             if len(distractors) < 3:
                 continue
-            used.add(anchor)
             correct_slot = self._stable(f"{anchor}|slot") % 4
             texts = distractors[:]
             texts.insert(correct_slot, anchor)
@@ -378,7 +394,7 @@ class DemoProvider(LLMProvider):
             questions.append(
                 {
                     "topic": topic,
-                    "question_text": f"According to the {subject} syllabus, which statement about {topic} is correct?",
+                    "question_text": self._stem(subject, topic, anchor, len(questions)),
                     "question_type": "SINGLE_CHOICE",
                     "difficulty": difficulty,
                     "bloom_level": "REMEMBER" if difficulty == "EASY" else "UNDERSTAND",
