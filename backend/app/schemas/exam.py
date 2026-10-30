@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.models.enums import BloomLevel, Difficulty, QuestionType
+from app.models.enums import BloomLevel, Difficulty, ExamSource, QuestionType
 
 
 class PatternItem(BaseModel):
@@ -20,6 +20,15 @@ class ExamTopicIn(BaseModel):
 
 
 class ExamConfigCreate(BaseModel):
+    """Blueprint for an internal exam.
+
+    GENERATED exams need a full blueprint (pattern, topic weights, difficulty and
+    Bloom mix) because the paper is assembled to it. UPLOADED exams carry a
+    teacher-prepared PDF, so only the logistics and total marks are required;
+    topics are optional metadata.
+    """
+
+    source: ExamSource = ExamSource.GENERATED
     subject_id: str
     title: str = Field(min_length=3, max_length=200)
     exam_type: str = Field(default="Internal Assessment 1", max_length=80)
@@ -28,22 +37,36 @@ class ExamConfigCreate(BaseModel):
     venue: str = Field(default="Examination Hall A", max_length=160)
     instructions: str = Field(default="", max_length=3000)
     total_marks: int = Field(ge=5, le=200)
-    pattern: list[PatternItem] = Field(min_length=1, max_length=10)
-    topics: list[ExamTopicIn] = Field(min_length=1, max_length=20)
-    difficulty_distribution: dict[Difficulty, float]
-    bloom_distribution: dict[BloomLevel, float]
+    pattern: list[PatternItem] = Field(default_factory=list, max_length=10)
+    topics: list[ExamTopicIn] = Field(default_factory=list, max_length=20)
+    difficulty_distribution: dict[Difficulty, float] = Field(default_factory=dict)
+    bloom_distribution: dict[BloomLevel, float] = Field(default_factory=dict)
     retry_limit: int = Field(default=3, ge=1, le=6)
 
     @model_validator(mode="after")
     def validate_paper_shape(self) -> "ExamConfigCreate":
+        topic_ids = [topic.topic_id for topic in self.topics]
+        if len(set(topic_ids)) != len(topic_ids):
+            raise ValueError("Each topic may appear only once")
+        if self.source == ExamSource.UPLOADED:
+            if self.pattern:
+                computed = sum(item.marks * item.count for item in self.pattern)
+                if computed != self.total_marks:
+                    raise ValueError(
+                        f"Question pattern totals {computed} marks but total_marks is {self.total_marks}"
+                    )
+            return self
+        if not self.pattern:
+            raise ValueError("A generated paper needs a question pattern")
+        if not self.topics:
+            raise ValueError("Select at least one topic for a generated paper")
+        if not self.difficulty_distribution or not self.bloom_distribution:
+            raise ValueError("A generated paper needs difficulty and Bloom distributions")
         computed = sum(item.marks * item.count for item in self.pattern)
         if computed != self.total_marks:
             raise ValueError(
                 f"Question pattern totals {computed} marks but total_marks is {self.total_marks}"
             )
-        topic_ids = [topic.topic_id for topic in self.topics]
-        if len(set(topic_ids)) != len(topic_ids):
-            raise ValueError("Each topic may appear only once")
         for label, weights in (
             ("topic", {topic.topic_id: topic.weight_percent for topic in self.topics}),
             ("difficulty", self.difficulty_distribution),
@@ -64,9 +87,12 @@ class ExamConfigCreate(BaseModel):
     @field_validator("exam_date")
     @classmethod
     def require_future(cls, value: datetime) -> datetime:
-        from datetime import date
+        from datetime import timezone
 
-        if value.date() < date.today():
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        value = value.astimezone(timezone.utc)
+        if value.date() < datetime.now(timezone.utc).date():
             raise ValueError("Examination date cannot be in the past")
         return value
 
@@ -86,6 +112,15 @@ class ExamConfigOut(BaseModel):
 
 class ExamOut(BaseModel):
     id: str
+    source: str = ExamSource.GENERATED
+    can_edit: bool = False
+    created_by_id: str = ""
+    paper_version: int | None = None
+    paper_file_name: str = ""
+    paper_page_count: int = 0
+    replaceable_until: datetime | None = None
+    window_opens_at: datetime | None = None
+    window_closes_at: datetime | None = None
     subject_id: str
     subject_name: str
     title: str
@@ -136,6 +171,9 @@ class SecurePaperOut(BaseModel):
     key_id: str
     ciphertext_sha256: str
     ciphertext_bytes: int
+    content_type: str = ""
+    original_name: str = ""
+    page_count: int = 0
     encrypted_at: datetime | None
     locked_at: datetime | None
     plaintext_hash_matches: bool
@@ -145,6 +183,11 @@ class SecurePaperOut(BaseModel):
 class ReleaseQueueItem(BaseModel):
     paper_id: str
     exam_id: str
+    source: str = ExamSource.GENERATED
+    paper_version: int = 1
+    page_count: int = 0
+    prints_used: int = 0
+    prints_remaining: int = 3
     exam_title: str
     subject_name: str
     exam_type: str
@@ -183,6 +226,8 @@ class DecryptOut(BaseModel):
     decrypted: bool
     integrity_verified: bool
     question_count: int
+    page_count: int = 0
+    content_type: str = ""
     sections: list[dict]
     plaintext_ttl_seconds: int
     message: str
@@ -194,6 +239,10 @@ class PrintOut(BaseModel):
     print_count: int
     prints_remaining: int
     message: str
+
+
+class CancelExamRequest(BaseModel):
+    reason: str = Field(min_length=5, max_length=255)
 
 
 class ReleaseHistoryItem(BaseModel):

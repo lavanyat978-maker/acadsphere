@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routers import academic, analytics, audit, auth, exams, meta, practice, syllabus
+from app.api.routers import academic, analytics, audit, auth, exams, meta, practice, syllabus, users
 from app.core.config import settings
 from app.core.errors import install_error_handlers
 from app.core.runtime import (
@@ -25,6 +25,10 @@ logger = logging.getLogger("praxis.app")
 async def lifespan(app: FastAPI):
     configure_logging()
     init_db()
+    if settings.GEN_INLINE:
+        from app.services.generation_service import recover_interrupted
+
+        recover_interrupted()
     if settings.SEED_ON_STARTUP:
         from app.seed import seed_if_empty
 
@@ -72,6 +76,7 @@ install_error_handlers(app)
 api = settings.API_PREFIX
 app.include_router(meta.router, prefix=api)
 app.include_router(auth.router, prefix=api)
+app.include_router(users.router, prefix=api)
 app.include_router(academic.router, prefix=api)
 app.include_router(syllabus.router, prefix=api)
 app.include_router(practice.router, prefix=api)

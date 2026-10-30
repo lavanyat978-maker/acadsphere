@@ -62,9 +62,10 @@ export default {
       const headers = new Headers(request.headers);
       headers.delete("host");
       headers.set("x-forwarded-proto", "https");
-      // The API derives the client address from the first X-Forwarded-For entry
-      // for rate limiting and audit records, so a browser-supplied value must
-      // never reach it: replace it with Cloudflare's verified connecting IP.
+      // The API trusts the last TRUSTED_PROXY_COUNT X-Forwarded-For entries for
+      // rate limiting and audit records, so a browser-supplied value must never
+      // reach it: replace it with Cloudflare's verified connecting IP. Render's
+      // proxy then appends this worker's address, hence TRUSTED_PROXY_COUNT=2.
       const clientIp = request.headers.get("cf-connecting-ip");
       if (clientIp) headers.set("x-forwarded-for", clientIp);
       else headers.delete("x-forwarded-for");

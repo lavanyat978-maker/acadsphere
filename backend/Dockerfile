@@ -28,4 +28,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=20s --timeout=4s --start-period=15s --retries=5 \
     CMD curl -fsS http://127.0.0.1:8000/api/health || exit 1
 
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*"]
+# No --proxy-headers: uvicorn would trust any X-Forwarded-For. The app reads the
+# header itself and honours only TRUSTED_PROXY_COUNT hops (see core/runtime.py).
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-proxy-headers"]

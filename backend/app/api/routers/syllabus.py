@@ -36,8 +36,12 @@ async def upload_document(
     principal: Principal = Depends(require_staff),
     db: Session = Depends(get_db),
 ) -> dict:
+    from starlette.concurrency import run_in_threadpool
+
     data = await file.read(settings.MAX_UPLOAD_MB * 1024 * 1024 + 1)
-    document = syllabus_service.upload(
+    # Extraction and embedding are blocking; keep them off the event loop.
+    document = await run_in_threadpool(
+        syllabus_service.upload,
         db,
         actor=principal.user,
         subject_id=subject_id,

@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.errors import AppError, Unauthorized
+from app.core.errors import AppError, Conflict, Forbidden, Unauthorized
 from app.core.security import (
     burn_password_check,
     create_token,
@@ -16,12 +16,14 @@ from app.core.security import (
     new_totp_secret,
     open_secret,
     password_needs_rehash,
+    password_policy_problem,
     seal_secret,
     totp_uri,
     utcnow,
     verify_password,
     verify_totp,
 )
+from app.core.timeutils import ensure_utc
 from app.models.enums import Role, Severity
 from app.models.tables import User
 from app.services.audit_service import record_audit, record_security_event
@@ -44,6 +46,7 @@ def _user_out(user: User) -> dict[str, Any]:
         "role": user.role,
         "department": user.department,
         "mfa_enabled": user.mfa_enabled,
+        "must_change_password": user.must_change_password,
         "last_login_at": user.last_login_at,
     }
 
@@ -108,7 +111,7 @@ def login(db: Session, email: str, password: str, ip: str, ua: str) -> dict[str,
         db.commit()
         raise Unauthorized("Email or password is incorrect.")
 
-    locked_until = user.locked_until
+    locked_until = ensure_utc(user.locked_until)
     if locked_until is not None and locked_until > utcnow():
         minutes = max(1, int((locked_until - utcnow()).total_seconds() // 60) + 1)
         record_audit(
@@ -133,22 +136,36 @@ def login(db: Session, email: str, password: str, ip: str, ua: str) -> dict[str,
 
     if user.role == Role.HOD:
         if not user.mfa_enabled or not user.mfa_secret_enc:
+            # First sign-in for an HOD: the password is proven, so hand out an
+            # enrolment challenge. The session is only issued once the HOD
+            # proves possession of the new authenticator (`/auth/mfa/enroll`).
+            secret = open_secret(user.mfa_secret_enc) if user.mfa_secret_enc else None
+            if not secret:
+                secret = new_totp_secret()
+                user.mfa_secret_enc = seal_secret(secret)
+            user.mfa_enabled = False
+            user.failed_login_count = 0
+            token, expires = create_token(
+                user.id, user.role, kind="mfa_enroll", token_version=user.token_version
+            )
             record_audit(
                 db,
-                event="LOGIN_BLOCKED_MFA_NOT_ENROLLED",
+                event="LOGIN_MFA_ENROLLMENT_REQUIRED",
                 actor=user,
                 resource_type="auth",
-                success=False,
                 ip=ip,
                 user_agent=ua,
             )
             db.commit()
-            raise AppError(
-                "MFA_NOT_ENROLLED",
-                "HOD accounts must enroll multi-factor authentication before signing in. "
-                "Use the MFA enrollment flow with your credentials.",
-                403,
-            )
+            return {
+                "mfa_required": True,
+                "enrollment_required": True,
+                "mfa_token": token,
+                "expires_at": expires,
+                "method": "TOTP",
+                "secret": secret,
+                "otpauth_uri": totp_uri(secret, user.email),
+            }
         user.failed_login_count = 0
         token, expires = create_token(
             user.id, user.role, kind="mfa_challenge", mfa_verified=False,
@@ -195,11 +212,14 @@ def login(db: Session, email: str, password: str, ip: str, ua: str) -> dict[str,
     }
 
 
-def verify_mfa(db: Session, mfa_token: str, code: str, ip: str, ua: str) -> dict[str, Any]:
+def _challenge_user(
+    db: Session, mfa_token: str, kind: str, ip: str, ua: str
+) -> User:
+    """Resolve and sanity-check the user behind an MFA challenge or enrolment token."""
     from app.core.security import decode_token
 
     try:
-        claims = decode_token(mfa_token, expected="mfa_challenge")
+        claims = decode_token(mfa_token, expected=kind)  # type: ignore[arg-type]
     except Exception:
         record_audit(
             db,
@@ -214,23 +234,37 @@ def verify_mfa(db: Session, mfa_token: str, code: str, ip: str, ua: str) -> dict
         raise Unauthorized("The MFA challenge expired. Sign in again.", "MFA_CHALLENGE_EXPIRED")
 
     user = db.get(User, claims.get("sub"))
-    if user is None or not user.is_active or not user.mfa_enabled or not user.mfa_secret_enc:
+    if user is None or not user.is_active or not user.mfa_secret_enc:
         raise Unauthorized("MFA is not available for this account.")
-
-    secret = open_secret(user.mfa_secret_enc)
-    if not verify_totp(secret, code):
-        _register_failure(db, user, ip, ua, "bad_totp")
-        record_security_event(
-            db,
-            event_type="MFA_FAILURE",
-            summary=f"Invalid TOTP code for {user.email}",
-            severity=Severity.WARNING,
-            actor_id=user.id,
-            ip=ip,
+    if int(claims.get("tv", 0)) != user.token_version:
+        raise Unauthorized("The MFA challenge is no longer valid. Sign in again.", "MFA_CHALLENGE_EXPIRED")
+    # Lockout applies to code guessing too, not only to passwords.
+    locked_until = ensure_utc(user.locked_until)
+    if locked_until is not None and locked_until > utcnow():
+        minutes = max(1, int((locked_until - utcnow()).total_seconds() // 60) + 1)
+        record_audit(
+            db, event="MFA_BLOCKED_LOCKED", actor=user, resource_type="auth", success=False, ip=ip, user_agent=ua
         )
         db.commit()
-        raise Unauthorized("That verification code is not valid.", "MFA_INVALID_CODE")
+        raise AccountLocked(minutes)
+    return user
 
+
+def _reject_code(db: Session, user: User, ip: str, ua: str) -> None:
+    _register_failure(db, user, ip, ua, "bad_totp")
+    record_security_event(
+        db,
+        event_type="MFA_FAILURE",
+        summary=f"Invalid TOTP code for {user.email}",
+        severity=Severity.WARNING,
+        actor_id=user.id,
+        ip=ip,
+    )
+    db.commit()
+    raise Unauthorized("That verification code is not valid.", "MFA_INVALID_CODE")
+
+
+def _issue_session(db: Session, user: User, ip: str, ua: str, event: str) -> dict[str, Any]:
     user.failed_login_count = 0
     user.locked_until = None
     user.last_login_at = utcnow()
@@ -239,7 +273,7 @@ def verify_mfa(db: Session, mfa_token: str, code: str, ip: str, ua: str) -> dict
     )
     record_audit(
         db,
-        event="LOGIN_MFA_SUCCESS",
+        event=event,
         actor=user,
         resource_type="auth",
         ip=ip,
@@ -256,7 +290,42 @@ def verify_mfa(db: Session, mfa_token: str, code: str, ip: str, ua: str) -> dict
     }
 
 
+def verify_mfa(db: Session, mfa_token: str, code: str, ip: str, ua: str) -> dict[str, Any]:
+    user = _challenge_user(db, mfa_token, "mfa_challenge", ip, ua)
+    if not user.mfa_enabled:
+        raise Unauthorized("MFA is not available for this account.")
+    if not verify_totp(open_secret(user.mfa_secret_enc), code):
+        _reject_code(db, user, ip, ua)
+    return _issue_session(db, user, ip, ua, "LOGIN_MFA_SUCCESS")
+
+
+def complete_enrollment_login(db: Session, mfa_token: str, code: str, ip: str, ua: str) -> dict[str, Any]:
+    """Finish the first-login enrolment started by `login` and open the session."""
+    user = _challenge_user(db, mfa_token, "mfa_enroll", ip, ua)
+    if user.mfa_enabled:
+        raise Conflict("MFA is already enrolled. Sign in again.", "MFA_ALREADY_ENABLED")
+    if not verify_totp(open_secret(user.mfa_secret_enc), code):
+        _reject_code(db, user, ip, ua)
+    user.mfa_enabled = True
+    user.token_version += 1
+    record_audit(db, event="MFA_ENROLLED", actor=user, resource_type="auth", ip=ip, user_agent=ua)
+    record_security_event(
+        db,
+        event_type="MFA_ENROLLED",
+        summary=f"TOTP enrolled at first sign-in for {user.email}",
+        severity=Severity.INFO,
+        actor_id=user.id,
+        ip=ip,
+    )
+    return _issue_session(db, user, ip, ua, "LOGIN_MFA_SUCCESS")
+
+
 def begin_mfa_enrollment(db: Session, user: User, ip: str) -> dict[str, Any]:
+    if user.mfa_enabled:
+        raise Conflict(
+            "Multi-factor authentication is already active. Disable it first to enrol a new device.",
+            "MFA_ALREADY_ENABLED",
+        )
     secret = open_secret(user.mfa_secret_enc) if user.mfa_secret_enc else None
     if not secret:
         secret = new_totp_secret()
@@ -272,6 +341,8 @@ def begin_mfa_enrollment(db: Session, user: User, ip: str) -> dict[str, Any]:
 
 
 def confirm_mfa_enrollment(db: Session, user: User, code: str, ip: str) -> dict[str, Any]:
+    if user.mfa_enabled:
+        raise Conflict("Multi-factor authentication is already active.", "MFA_ALREADY_ENABLED")
     if not user.mfa_secret_enc:
         raise AppError("MFA_NOT_STARTED", "Start enrollment before confirming.", 400)
     secret = open_secret(user.mfa_secret_enc)
@@ -290,6 +361,31 @@ def confirm_mfa_enrollment(db: Session, user: User, code: str, ip: str) -> dict[
     )
     db.commit()
     return {"mfa_enabled": True, "message": "Multi-factor authentication is now active. Sign in again."}
+
+
+def disable_mfa(db: Session, user: User, code: str, ip: str) -> dict[str, Any]:
+    if user.role == Role.HOD:
+        raise Forbidden("MFA is mandatory for the HOD role and cannot be disabled.", code="MFA_MANDATORY")
+    if not user.mfa_enabled or not user.mfa_secret_enc:
+        raise Conflict("Multi-factor authentication is not active.", "MFA_NOT_ENABLED")
+    if not verify_totp(open_secret(user.mfa_secret_enc), code):
+        record_audit(db, event="MFA_DISABLE_FAILED", actor=user, resource_type="auth", success=False, ip=ip)
+        db.commit()
+        raise AppError("MFA_INVALID_CODE", "That verification code is not valid.", 400)
+    user.mfa_enabled = False
+    user.mfa_secret_enc = None
+    user.token_version += 1
+    record_audit(db, event="MFA_DISABLED", actor=user, resource_type="auth", ip=ip)
+    record_security_event(
+        db,
+        event_type="MFA_DISABLED",
+        summary=f"TOTP disabled by {user.email}",
+        severity=Severity.WARNING,
+        actor_id=user.id,
+        ip=ip,
+    )
+    db.commit()
+    return {"mfa_enabled": False, "message": "Multi-factor authentication disabled. Sign in again."}
 
 
 def demo_code_for_challenge(db: Session, mfa_token: str, ip: str) -> dict[str, Any]:
@@ -355,8 +451,14 @@ def change_password(
         )
         db.commit()
         raise Unauthorized("Your current password is incorrect.")
+    if verify_password(new, user.password_hash):
+        raise AppError("PASSWORD_REUSED", "Choose a password different from the current one.", 400)
+    problem = password_policy_problem(new)
+    if problem:
+        raise AppError("WEAK_PASSWORD", problem, 400)
     user.password_hash = hash_password(new)
     user.token_version += 1
+    user.must_change_password = False
     record_audit(db, event="PASSWORD_CHANGED", actor=user, resource_type="auth", ip=ip)
     db.commit()
     return {"message": "Password updated. Other sessions have been revoked."}

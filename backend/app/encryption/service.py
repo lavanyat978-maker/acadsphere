@@ -110,7 +110,12 @@ class EncryptionResult:
 
 
 def encrypt_paper(*, paper_id: str, exam_id: str, version: int, payload: dict[str, Any]) -> EncryptionResult:
-    plaintext = canonical_json(payload)
+    """Encrypt a generated paper (structured JSON payload)."""
+    return encrypt_bytes(paper_id=paper_id, exam_id=exam_id, version=version, plaintext=canonical_json(payload))
+
+
+def encrypt_bytes(*, paper_id: str, exam_id: str, version: int, plaintext: bytes) -> EncryptionResult:
+    """Encrypt an opaque paper body (an uploaded PDF, or canonical JSON)."""
     dek = km.generate_dek()
     wrapped = km.wrap(paper_id, dek)
     aad = paper_aad(paper_id, version, exam_id)
@@ -128,6 +133,30 @@ def encrypt_paper(*, paper_id: str, exam_id: str, version: int, payload: dict[st
     )
 
 
+def decrypt_bytes(
+    *,
+    paper_id: str,
+    exam_id: str,
+    version: int,
+    ciphertext: bytes,
+    key_id: str,
+    wrapped_dek: str,
+    payload_nonce: str,
+    expected_sha256: str,
+) -> bytes:
+    if sha256_hex(ciphertext) != expected_sha256:
+        raise KeyManagementError("Ciphertext integrity check failed before decryption")
+    dek = km.unwrap(paper_id, key_id, wrapped_dek)
+    nonce = base64.b64decode(payload_nonce)
+    try:
+        plaintext = AESGCM(dek).decrypt(nonce, ciphertext, paper_aad(paper_id, version, exam_id))
+    except Exception as exc:  # noqa: BLE001 - wrong AAD/key or tampering
+        raise KeyManagementError("Paper decryption failed: authentication error") from exc
+    finally:
+        del dek
+    return plaintext
+
+
 def decrypt_paper(
     *,
     paper_id: str,
@@ -139,12 +168,17 @@ def decrypt_paper(
     payload_nonce: str,
     expected_sha256: str,
 ) -> tuple[dict[str, Any], bool]:
-    if sha256_hex(ciphertext) != expected_sha256:
-        raise KeyManagementError("Ciphertext integrity check failed before decryption")
-    dek = km.unwrap(paper_id, key_id, wrapped_dek)
-    nonce = base64.b64decode(payload_nonce)
-    plaintext = AESGCM(dek).decrypt(nonce, ciphertext, paper_aad(paper_id, version, exam_id))
-    del dek
+    """Decrypt a generated (JSON) paper."""
+    plaintext = decrypt_bytes(
+        paper_id=paper_id,
+        exam_id=exam_id,
+        version=version,
+        ciphertext=ciphertext,
+        key_id=key_id,
+        wrapped_dek=wrapped_dek,
+        payload_nonce=payload_nonce,
+        expected_sha256=expected_sha256,
+    )
     try:
         payload = json.loads(plaintext)
     except json.JSONDecodeError as exc:  # pragma: no cover - corruption only

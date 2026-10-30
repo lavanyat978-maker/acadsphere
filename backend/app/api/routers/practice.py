@@ -9,7 +9,9 @@ from sqlalchemy.orm import Session
 from app.core.deps import Principal, require_staff, require_student
 from app.db.session import get_db
 from app.schemas.practice import (
+    AttemptAutosave,
     AttemptDetail,
+    AutosaveOut,
     AttemptHistoryItem,
     AttemptOut,
     AttemptSubmit,
@@ -113,6 +115,31 @@ def add_questions(
     return result
 
 
+@router.put("/tests/{test_id}/questions/{question_id}", response_model=PracticeTestDetail)
+def update_question(
+    test_id: str,
+    question_id: str,
+    payload: PracticeQuestionCreate,
+    principal: Principal = Depends(require_staff),
+    db: Session = Depends(get_db),
+) -> dict:
+    result = practice_service.update_question(db, principal.user, test_id, question_id, payload)
+    db.commit()
+    return result
+
+
+@router.delete("/tests/{test_id}/questions/{question_id}", response_model=PracticeTestDetail)
+def delete_question(
+    test_id: str,
+    question_id: str,
+    principal: Principal = Depends(require_staff),
+    db: Session = Depends(get_db),
+) -> dict:
+    result = practice_service.delete_question(db, principal.user, test_id, question_id)
+    db.commit()
+    return result
+
+
 @router.post("/tests/{test_id}/generate")
 def generate_questions(
     test_id: str,
@@ -160,6 +187,22 @@ def get_attempt(
     return result
 
 
+@router.put("/attempts/{attempt_id}/answers", response_model=AutosaveOut)
+def autosave_attempt(
+    attempt_id: str,
+    payload: AttemptAutosave,
+    principal: Principal = Depends(require_student),
+    db: Session = Depends(get_db),
+) -> dict:
+    answers = [answer.model_dump() for answer in payload.answers]
+    try:
+        result = practice_service.autosave_attempt(db, principal.user, attempt_id, answers)
+    finally:
+        # An expired attempt is finalized inside the call; keep that even when it raises.
+        db.commit()
+    return result
+
+
 @router.post("/attempts/{attempt_id}/submit", response_model=ResultOut)
 def submit_attempt(
     attempt_id: str,
@@ -179,7 +222,9 @@ def get_result(
     principal: Principal = Depends(require_student),
     db: Session = Depends(get_db),
 ) -> dict:
-    return practice_service.get_result(db, principal.user, attempt_id, staff_view=False)
+    result = practice_service.get_result(db, principal.user, attempt_id)
+    db.commit()
+    return result
 
 
 @router.get("/staff/attempts/{attempt_id}/result", response_model=ResultOut)
@@ -188,14 +233,18 @@ def get_staff_result(
     principal: Principal = Depends(require_staff),
     db: Session = Depends(get_db),
 ) -> dict:
-    return practice_service.get_result(db, principal.user, attempt_id, staff_view=True)
+    result = practice_service.get_result(db, principal.user, attempt_id)
+    db.commit()
+    return result
 
 
 @router.get("/history", response_model=list[AttemptHistoryItem])
 def history(
     principal: Principal = Depends(require_student), db: Session = Depends(get_db)
 ) -> list[dict]:
-    return practice_service.student_history(db, principal.user)
+    result = practice_service.student_history(db, principal.user)
+    db.commit()
+    return result
 
 
 @router.get("/analytics/me", response_model=StudentAnalytics)
@@ -204,6 +253,8 @@ def my_analytics(
 ) -> dict:
     from app.analytics.engine import student_analytics
 
+    practice_service.finalize_expired_attempts(db, principal.user.id)
+    db.commit()
     return student_analytics(db, principal.user.id)
 
 

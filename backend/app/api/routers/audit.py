@@ -7,7 +7,10 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from datetime import datetime, timezone
+
 from app.core.deps import Principal, require_hod
+from app.core.errors import NotFound
 from app.db.session import get_db
 from app.models.tables import AuditLog, SecurityEvent
 from app.schemas.exam import AuditLogOut
@@ -82,6 +85,34 @@ def security_events(
             "ip_address": row.ip_address,
             "detail": row.detail,
             "created_at": row.created_at,
+            "resolved": row.resolved,
+            "resolved_at": row.resolved_at,
         }
         for row in rows
     ]
+
+
+@router.post("/security-events/{event_id}/resolve")
+def resolve_security_event(
+    event_id: str,
+    principal: Principal = Depends(require_hod),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    row = db.get(SecurityEvent, event_id)
+    if row is None:
+        raise NotFound("Security event")
+    if not row.resolved:
+        row.resolved = True
+        row.resolved_by = principal.user.id
+        row.resolved_at = datetime.now(timezone.utc)
+        audit_service.record_audit(
+            db,
+            event="SECURITY_EVENT_RESOLVED",
+            actor=principal.user,
+            resource_type="security_event",
+            resource_id=row.id,
+            ip=principal.ip,
+            metadata={"event_type": row.event_type},
+        )
+        db.commit()
+    return {"id": row.id, "resolved": True, "resolved_at": row.resolved_at}

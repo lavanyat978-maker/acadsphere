@@ -88,6 +88,8 @@ class PracticeTestOut(BaseModel):
     attempt_count: int = 0
     best_score: float | None = None
     last_attempt_at: datetime | None = None
+    can_edit: bool = False
+    created_by_name: str = ""
 
 
 class PracticeQuestionOut(BaseModel):
@@ -119,6 +121,17 @@ class AttemptSubmit(BaseModel):
     answers: list[AnswerSubmit] = Field(default_factory=list, max_length=100)
 
 
+class AttemptAutosave(BaseModel):
+    answers: list[AnswerSubmit] = Field(default_factory=list, max_length=100)
+
+
+class AutosaveOut(BaseModel):
+    saved: int
+    last_saved_at: datetime
+    expires_at: datetime
+    server_time: datetime
+
+
 class AttemptOut(BaseModel):
     id: str
     test_id: str
@@ -130,6 +143,8 @@ class AttemptOut(BaseModel):
     server_time: datetime
     total_marks: int
     warning: str
+    saved_answers: dict[str, dict] = {}
+    last_saved_at: datetime | None = None
 
 
 class AttemptDetail(AttemptOut):
@@ -167,6 +182,8 @@ class ResultOut(BaseModel):
     topic_breakdown: list[dict]
     difficulty_breakdown: list[dict]
     review: list[ReviewItem] = []
+    auto_submitted: bool = False
+    student_name: str | None = None
 
 
 class TopicPerformance(BaseModel):

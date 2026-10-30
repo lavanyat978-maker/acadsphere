@@ -27,6 +27,8 @@ services:
       STORAGE_LOCAL_PATH: /data/storage
       CORS_ORIGINS: http://localhost:8080
       GEN_INLINE: "true"
+      # nginx (frontend container) is the single proxy in front of the API.
+      TRUSTED_PROXY_COUNT: "1"
     volumes:
       - praxis_storage:/data/storage
     depends_on:

@@ -20,6 +20,9 @@ class SubjectOut(BaseModel):
     department: str
     topics: list[TopicOut] = []
     assigned_teachers: list[str] = []
+    teacher_ids: list[str] = []
+    student_count: int = 0
+    assigned_to_me: bool = False
 
 
 class SubjectCreate(BaseModel):
@@ -28,6 +31,27 @@ class SubjectCreate(BaseModel):
     description: str = Field(default="", max_length=2000)
     department: str = Field(default="Computer Science", max_length=120)
     teacher_ids: list[str] = []
+
+
+class SubjectUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=3, max_length=160)
+    description: str | None = Field(default=None, max_length=2000)
+    department: str | None = Field(default=None, max_length=120)
+
+
+class EnrollRequest(BaseModel):
+    student_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class TopicUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=160)
+    unit: str | None = Field(default=None, max_length=80)
+    description: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("name")
+    @classmethod
+    def trim(cls, value: str | None) -> str | None:
+        return value.strip() if value else value
 
 
 class TopicCreate(BaseModel):

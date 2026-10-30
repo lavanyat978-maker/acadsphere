@@ -97,10 +97,21 @@ rate_limiter = RateLimiter()
 
 
 def client_ip(request: Request) -> str:
+    """Caller IP. X-Forwarded-For is honoured only for configured trusted proxies.
+
+    Each trusted proxy appends the address it saw, so the real client is the
+    entry TRUSTED_PROXY_COUNT positions from the right. Anything further left was
+    supplied by the client and is ignored.
+    """
+    peer = request.client.host if request.client else "unknown"
+    hops = settings.TRUSTED_PROXY_COUNT
     forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    if hops <= 0 or not forwarded:
+        return peer
+    chain = [part.strip() for part in forwarded.split(",") if part.strip()]
+    if len(chain) < hops:
+        return peer
+    return chain[-hops][:64]
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -148,6 +159,8 @@ UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 CSRF_EXEMPT_PATHS = {
     f"{settings.API_PREFIX}/auth/login",
     f"{settings.API_PREFIX}/auth/mfa/verify",
+    f"{settings.API_PREFIX}/auth/mfa/enroll",
+    f"{settings.API_PREFIX}/auth/mfa/challenge-code",
     f"{settings.API_PREFIX}/auth/logout",
 }
 
