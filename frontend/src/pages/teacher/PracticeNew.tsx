@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { ArrowLeft, BookOpenCheck, CheckCircle2, ClipboardList, Sparkles } from "lucide-react";
 import { api, errorMessage, fieldErrors } from "../../lib/api";
 import { useApi } from "../../lib/useApi";
+import { fromLocalInputValue } from "../../lib/format";
 import type { PracticeTestDetail, Subject } from "../../lib/types";
 import { Button, Card, ErrorState, Field, Input, PageHeader, PageLoading, Select, Textarea } from "../../components/ui";
 import { useToast } from "../../context/ToastContext";
@@ -18,6 +19,9 @@ export function PracticeNew() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [duration, setDuration] = useState(20);
+  const [opensAt, setOpensAt] = useState("");
+  const [closesAt, setClosesAt] = useState("");
+  const [maxAttempts, setMaxAttempts] = useState("");
   const [difficulty, setDifficulty] = useState("MEDIUM");
 
   const subject = useMemo(
@@ -48,6 +52,9 @@ export function PracticeNew() {
           title,
           description,
           duration_minutes: duration,
+          opens_at: fromLocalInputValue(opensAt),
+          closes_at: fromLocalInputValue(closesAt),
+          max_attempts: maxAttempts ? Number(maxAttempts) : null,
           difficulty,
           topic_ids: selectedTopics,
           questions: [],
@@ -127,6 +134,15 @@ export function PracticeNew() {
                   <option value="MEDIUM">Medium</option>
                   <option value="HARD">Hard</option>
                 </Select>
+              </Field>
+              <Field label="Opens at (optional)" hint="Students can see it before then but cannot start.">
+                <Input type="datetime-local" value={opensAt} onChange={(event) => setOpensAt(event.target.value)} />
+              </Field>
+              <Field label="Closes at (optional)" hint="Attempts in progress end at this time.">
+                <Input type="datetime-local" value={closesAt} onChange={(event) => setClosesAt(event.target.value)} />
+              </Field>
+              <Field label="Attempts per student (optional)" hint="Leave empty for unlimited practice.">
+                <Input type="number" min={1} max={50} value={maxAttempts} onChange={(event) => setMaxAttempts(event.target.value)} />
               </Field>
             </div>
           </Card>

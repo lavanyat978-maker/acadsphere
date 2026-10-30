@@ -116,6 +116,11 @@ export interface PracticeTest {
   last_attempt_at: string | null;
   can_edit: boolean;
   created_by_name: string;
+  opens_at: string | null;
+  closes_at: string | null;
+  max_attempts: number | null;
+  availability: "OPEN" | "UPCOMING" | "CLOSED";
+  attempts_remaining: number | null;
 }
 
 export interface QuestionOption {

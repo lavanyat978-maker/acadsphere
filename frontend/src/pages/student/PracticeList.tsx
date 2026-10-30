@@ -4,7 +4,7 @@ import { ArrowRight, BookOpenCheck, Clock3, Filter, Search, Sparkles, Target } f
 import { useApi } from "../../lib/useApi";
 import type { PracticeTest } from "../../lib/types";
 import { Badge, Card, EmptyState, ErrorState, PageHeader, PageLoading } from "../../components/ui";
-import { difficultyTone, scoreTone } from "../../lib/format";
+import { difficultyTone, scoreTone, formatDate } from "../../lib/format";
 
 export function PracticeList() {
   const tests = useApi<PracticeTest[]>("/practice/tests");
@@ -78,6 +78,9 @@ export function PracticeList() {
               <div className="practice-card-top">
                 <Badge tone="neutral">{test.subject_name}</Badge>
                 <Badge tone={difficultyTone(test.difficulty)}>{test.difficulty.toLowerCase()}</Badge>
+                {test.availability === "UPCOMING" && <Badge tone="info">Opens {formatDate(test.opens_at)}</Badge>}
+                {test.availability === "CLOSED" && <Badge tone="neutral">Closed</Badge>}
+                {test.availability === "OPEN" && test.closes_at && <Badge tone="warning">Closes {formatDate(test.closes_at)}</Badge>}
               </div>
               <h3>{test.title}</h3>
               <p className="practice-description">{test.description || "Topic-focused practice set."}</p>

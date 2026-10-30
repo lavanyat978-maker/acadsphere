@@ -72,6 +72,15 @@ def _has_attempts(db: Session, test_id: str) -> bool:
     return db.execute(select(PracticeAttempt.id).where(PracticeAttempt.test_id == test_id).limit(1)).first() is not None
 
 
+def availability(test: PracticeTest, now: datetime | None = None) -> str:
+    now = now or _now()
+    if test.opens_at and ensure_utc(test.opens_at) > now:
+        return "UPCOMING"
+    if test.closes_at and ensure_utc(test.closes_at) <= now:
+        return "CLOSED"
+    return "OPEN"
+
+
 def _test_out(
     db: Session,
     test: PracticeTest,
@@ -110,6 +119,13 @@ def _test_out(
         "last_attempt_at": last_at,
         "can_edit": bool(viewer is not None and can_edit_test(viewer, test)),
         "created_by_name": creator.full_name if creator else "",
+        "opens_at": test.opens_at,
+        "closes_at": test.closes_at,
+        "max_attempts": test.max_attempts,
+        "availability": availability(test),
+        "attempts_remaining": (
+            max(0, test.max_attempts - len(own)) if student_id and test.max_attempts else None
+        ),
     }
 
 
@@ -155,6 +171,9 @@ def create_test(db: Session, teacher: User, payload: PracticeTestCreate) -> dict
         duration_minutes=payload.duration_minutes,
         difficulty=payload.difficulty,
         status=PracticeTestStatus.DRAFT,
+        opens_at=payload.opens_at,
+        closes_at=payload.closes_at,
+        max_attempts=payload.max_attempts,
     )
     db.add(test)
     db.flush()
@@ -241,13 +260,25 @@ def _ensure_editable_content(db: Session, test: PracticeTest) -> None:
 
 def update_test(db: Session, user: User, test_id: str, payload: PracticeTestUpdate) -> dict[str, Any]:
     test = ensure_edit_test(db, user, test_id)
-    if test.status == PracticeTestStatus.PUBLISHED and _has_attempts(db, test.id):
+    changes = payload.model_dump(exclude_unset=True)
+    content_change = any(changes.get(field) is not None for field in ("title", "description", "duration_minutes"))
+    # Once students have attempted a published test its content is fixed, but the
+    # schedule (open/close dates, attempt limit) can still be adjusted.
+    if content_change and test.status == PracticeTestStatus.PUBLISHED and _has_attempts(db, test.id):
         raise Conflict(
-            "A published test with attempts cannot be edited. Archive it and create a new test.",
+            "A published test with attempts cannot be edited. Archive it and create a new test. "
+            "The availability window and attempt limit can still be changed.",
             "TEST_LOCKED",
         )
-    for field, value in payload.model_dump(exclude_none=True).items():
-        setattr(test, field, value)
+    for field in ("title", "description", "duration_minutes"):
+        if changes.get(field) is not None:
+            setattr(test, field, changes[field])
+    # Schedule fields may be cleared with an explicit null.
+    for field in ("opens_at", "closes_at", "max_attempts"):
+        if field in changes:
+            setattr(test, field, changes[field])
+    if test.opens_at and test.closes_at and ensure_utc(test.closes_at) <= ensure_utc(test.opens_at):
+        raise Conflict("The closing time must be after the opening time.", "INVALID_WINDOW")
     db.flush()
     return test_detail(db, test, viewer=user)
 
@@ -447,12 +478,34 @@ def start_attempt(db: Session, student: User, test_id: str) -> dict[str, Any]:
             return _attempt_payload(attempt, test)
         _finalize_expired(db, attempt, test)
 
+    state = availability(test)
+    if state == "UPCOMING":
+        raise Conflict("This practice test has not opened yet.", "TEST_NOT_OPEN")
+    if state == "CLOSED":
+        raise Conflict("This practice test has closed.", "TEST_CLOSED")
+    if test.max_attempts:
+        used = len(
+            db.execute(
+                select(PracticeAttempt.id).where(
+                    PracticeAttempt.test_id == test.id, PracticeAttempt.student_id == student.id
+                )
+            ).all()
+        )
+        if used >= test.max_attempts:
+            raise Conflict(
+                f"You have used all {test.max_attempts} attempt(s) for this test.", "ATTEMPT_LIMIT_REACHED"
+            )
+
+    # An attempt never runs past the test's closing time.
+    deadline = _now() + timedelta(minutes=test.duration_minutes)
+    if test.closes_at:
+        deadline = min(deadline, ensure_utc(test.closes_at))
     attempt = PracticeAttempt(
         test_id=test.id,
         student_id=student.id,
         status=AttemptStatus.IN_PROGRESS,
         started_at=_now(),
-        expires_at=_now() + timedelta(minutes=test.duration_minutes),
+        expires_at=deadline,
         max_score=float(test.total_marks or sum(q.marks for q in test.questions)),
         draft_answers={},
     )

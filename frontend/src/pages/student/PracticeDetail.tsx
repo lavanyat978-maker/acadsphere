@@ -15,7 +15,7 @@ import { api, errorMessage } from "../../lib/api";
 import { useApi } from "../../lib/useApi";
 import type { Attempt, PracticeTestDetail } from "../../lib/types";
 import { Badge, Button, Card, ErrorState, KeyValue, PageHeader, PageLoading } from "../../components/ui";
-import { difficultyTone, scoreTone } from "../../lib/format";
+import { difficultyTone, scoreTone, formatDateTime } from "../../lib/format";
 import { useToast } from "../../context/ToastContext";
 
 export function PracticeDetail() {
@@ -80,8 +80,33 @@ export function PracticeDetail() {
             </ul>
           </div>
 
+          {data.availability !== "OPEN" || data.attempts_remaining === 0 ? (
+            <div className="notice notice-warning">
+              {data.availability === "UPCOMING"
+                ? `This set opens ${formatDateTime(data.opens_at)}.`
+                : data.availability === "CLOSED"
+                  ? `This set closed ${formatDateTime(data.closes_at)}. Your past results stay available in History.`
+                  : `You have used all ${data.max_attempts} attempt(s) for this set.`}
+            </div>
+          ) : (
+            (data.closes_at || data.max_attempts) && (
+              <div className="notice">
+                {[
+                  data.closes_at ? `Closes ${formatDateTime(data.closes_at)}; an attempt in progress ends then.` : "",
+                  data.attempts_remaining !== null ? `${data.attempts_remaining} attempt(s) remaining.` : "",
+                ].filter(Boolean).join(" ")}
+              </div>
+            )
+          )}
+
           <div className="briefing-actions">
-            <Button size="lg" loading={starting} icon={<Play size={17} />} onClick={start}>
+            <Button
+              size="lg"
+              loading={starting}
+              icon={<Play size={17} />}
+              onClick={start}
+              disabled={data.availability !== "OPEN" || data.attempts_remaining === 0}
+            >
               {data.attempt_count > 0 ? "Start another attempt" : "Start practice"}
             </Button>
             <Link to="/student/analytics">

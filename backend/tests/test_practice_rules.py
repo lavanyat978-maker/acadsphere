@@ -196,3 +196,37 @@ def test_hod_student_analytics_and_staff_result_review(client: TestClient, token
     row = analytics["student_rows"][0]
     review = client.get(f"/api/practice/staff/attempts/{row['last_attempt_id']}/result", headers=tokens["teacher"])
     assert review.status_code == 200 and review.json()["student_name"] == row["student_name"]
+
+
+def test_availability_window_and_attempt_limit(client: TestClient, tokens, seeded):
+    test_id = _draft_test(client, tokens, seeded, "Scheduled Test")
+    soon = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    later = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    bad = client.patch(f"/api/practice/tests/{test_id}", headers=tokens["teacher"], json={"opens_at": later, "closes_at": soon})
+    assert bad.status_code == 422
+    upcoming = client.patch(
+        f"/api/practice/tests/{test_id}", headers=tokens["teacher"], json={"opens_at": soon, "max_attempts": 1}
+    )
+    assert upcoming.status_code == 200 and upcoming.json()["availability"] == "UPCOMING"
+    client.post(f"/api/practice/tests/{test_id}/status", headers=tokens["teacher"], json={"status": "PUBLISHED"})
+    listed = {row["id"]: row for row in client.get("/api/practice/tests", headers=tokens["student"]).json()}
+    assert listed[test_id]["availability"] == "UPCOMING" and listed[test_id]["attempts_remaining"] == 1
+    blocked = client.post(f"/api/practice/tests/{test_id}/attempts", headers=tokens["student"])
+    assert blocked.status_code == 409 and blocked.json()["error"] == "TEST_NOT_OPEN"
+
+    # Open now, closing in 5 minutes: the attempt deadline is capped at the close.
+    closes = datetime.now(timezone.utc) + timedelta(minutes=5)
+    client.patch(
+        f"/api/practice/tests/{test_id}", headers=tokens["teacher"], json={"opens_at": None, "closes_at": closes.isoformat()}
+    )
+    attempt = client.post(f"/api/practice/tests/{test_id}/attempts", headers=tokens["student"]).json()
+    assert datetime.fromisoformat(attempt["expires_at"]).replace(tzinfo=timezone.utc) <= closes + timedelta(seconds=1)
+    client.post(f"/api/practice/attempts/{attempt['id']}/submit", headers=tokens["student"], json={"answers": []})
+    limit = client.post(f"/api/practice/tests/{test_id}/attempts", headers=tokens["student"])
+    assert limit.status_code == 409 and limit.json()["error"] == "ATTEMPT_LIMIT_REACHED"
+
+    client.patch(
+        f"/api/practice/tests/{test_id}", headers=tokens["hod"], json={"closes_at": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(), "max_attempts": None}
+    )
+    closed = client.post(f"/api/practice/tests/{test_id}/attempts", headers=tokens["student2"])
+    assert closed.status_code == 409 and closed.json()["error"] == "TEST_CLOSED"
