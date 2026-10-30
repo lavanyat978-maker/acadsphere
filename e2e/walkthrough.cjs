@@ -196,10 +196,12 @@ async function teacher(browser) {
   await say(`${generated} questions generated, each with options, the correct answer and an explanation.`);
   await click(page.getByRole("button", { name: "Edit question 1" }));
   await page.waitForSelector(".modal textarea");
-  await page.locator(".modal textarea").first().fill("Which property of a transaction guarantees that its effects survive a crash?");
-  await say("Any draft question can be edited before publishing.");
+  const stem = page.locator(".modal textarea").first();
+  const revised = `${(await stem.inputValue()).replace(/\?$/, "")} (choose one)?`;
+  await stem.fill(revised);
+  await say("Any draft question can be edited before publishing: wording, options, answer, marks or type.");
   await click(page.locator(".modal").getByRole("button", { name: "Save question" }));
-  await page.waitForSelector("text=Which property of a transaction guarantees");
+  await page.waitForSelector(`text=${revised}`);
   await click(page.getByRole("button", { name: "Publish" }));
   await page.waitForSelector(".badge >> text=Published");
   check("teacher publishes the practice set", true);
@@ -334,6 +336,22 @@ async function hod(browser) {
   shared.email = (await page.locator(".import-results tbody tr").first().locator("td").nth(1).innerText()).trim();
   shared.tempPassword = (await page.locator(".import-results tbody tr").first().locator("code").innerText()).trim();
   await click(page.locator(".modal").getByRole("button", { name: "Done" }));
+  await click(page.getByRole("link", { name: "Analytics for Riya Sharma" }));
+  await page.waitForSelector("text=/Riya Sharma: performance/");
+  check("HOD opens a student's learning analytics", true);
+  await say("Any student's learning analytics, one click from People.");
+  await scrollThrough(page, 2);
+  await click(nav(page, "Practice studio"));
+  await click(page.locator("tr", { hasText: "Transactions quick check" }).getByRole("link"));
+  await page.waitForSelector(".tabs");
+  await click(page.getByRole("button", { name: /^Analytics/ }));
+  await page.waitForSelector(".student-row-link");
+  await say("The HOD sees every practice set. Cohort analytics per topic and per student.");
+  await click(page.locator(".student-row-link").first());
+  await page.waitForSelector("text=/Attempt by/");
+  check("staff review a student's attempt", true);
+  await say("Staff can open any student's attempt in their subjects, answer by answer.");
+  await scrollThrough(page, 2);
 
   // Subjects: enrolment and topics.
   await click(nav(page, "Subjects"));
@@ -371,6 +389,9 @@ async function hod(browser) {
   await click(page.getByRole("button", { name: "Mark released" }));
   await page.waitForTimeout(1200);
   await say("Step 4: mark the paper released to invigilation. The lifecycle is closed.");
+  await page.locator("text=Release history").scrollIntoViewIfNeeded();
+  await page.waitForTimeout(600);
+  await say("The release history keeps every authorisation, decryption and print.");
 
   // Audit and security.
   await click(nav(page, "Audit trail"));
