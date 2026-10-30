@@ -15,6 +15,7 @@ from app.db.session import init_db, session_scope
 from app.models.enums import (
     BloomLevel,
     Difficulty,
+    ExamSource,
     QuestionType,
     Role,
 )
@@ -137,6 +138,33 @@ C-SCAN and LOOK. RAID 0 stripes without redundancy, RAID 1 mirrors, RAID 5 distr
 and RAID 6 adds dual parity. Caching and buffering hide device latency. Direct memory access
 moves data without per-byte CPU involvement. Device drivers present a uniform interface.
 """
+
+
+def _demo_paper_pdf() -> bytes:
+    """A small teacher-style question paper used by the uploaded-paper demo exam."""
+    import io
+
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    buffer = io.BytesIO()
+    page = canvas.Canvas(buffer, pagesize=A4)
+    lines = [
+        "CS502 Operating Systems - Class Test (20 marks)",
+        "",
+        "1. Compare round robin and priority scheduling. (5)",
+        "2. Explain how a page fault is serviced. (5)",
+        "3. State the four necessary conditions for deadlock. (5)",
+        "4. Describe how journaling protects a file system after a crash. (5)",
+        "5. Explain thrashing and one way to prevent it. (5)",
+    ]
+    y = 780
+    for line in lines:
+        page.drawString(60, y, line)
+        y -= 24
+    page.showPage()
+    page.save()
+    return buffer.getvalue()
 
 
 def _practice_questions() -> dict[str, list[dict]]:
@@ -448,6 +476,11 @@ def seed_demo() -> dict[str, int]:
         db.flush()
         for subject, teacher_user in ((dbms, teacher), (os_subject, teacher), (os_subject, teacher2)):
             academic_service.assign_teacher(db, subject.id, teacher_user.id)
+        student3 = users["sara@praxis.demo"]
+        # Riya and Aman take both subjects; Sara only Operating Systems, so the
+        # enrolment scoping is visible in the demo.
+        academic_service.enroll_students(db, dbms.id, [student.id, student2.id])
+        academic_service.enroll_students(db, os_subject.id, [student.id, student2.id, student3.id])
         db.commit()
 
         dbms_topics = {topic.name: topic for topic in academic_service.topics_for_subject(db, dbms.id)}
@@ -525,7 +558,9 @@ def seed_demo() -> dict[str, int]:
                 subject_id=dbms.id,
                 title="DBMS Internal Assessment 1",
                 exam_type="Internal Assessment 1",
-                exam_date=now + timedelta(minutes=45),
+                # Inside the release window (opens 24h before, closes 2h after) for
+                # most of a day, so the HOD release demo keeps working after seeding.
+                exam_date=now + timedelta(hours=20),
                 duration_minutes=90,
                 venue="Examination Hall A",
                 instructions="Answer all questions. Calculators are not permitted.",
@@ -622,6 +657,32 @@ def seed_demo() -> dict[str, int]:
         )
         db.commit()
         upcoming_id, os_draft_id = upcoming.id, os_draft.id
+
+        # A teacher-prepared paper, to show the upload route next to generation.
+        uploaded = exam_service.create_exam(
+            db,
+            db.get(User, users["kavya@praxis.demo"].id),
+            ExamConfigCreate(
+                source=ExamSource.UPLOADED,
+                subject_id=os_subject.id,
+                title="OS Surprise Quiz",
+                exam_type="Class Test",
+                exam_date=now + timedelta(days=5),
+                duration_minutes=45,
+                venue="Lab 2",
+                instructions="Answer any four questions.",
+                total_marks=20,
+            ),
+        )
+        db.flush()
+        exam_service.upload_paper(
+            db,
+            db.get(User, users["kavya@praxis.demo"].id),
+            uploaded.id,
+            filename="os-surprise-quiz.pdf",
+            data=_demo_paper_pdf(),
+        )
+        db.commit()
 
     generation_service.run_generation(request_id)
 

@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     LOGIN_LOCK_MINUTES: int = 15
     COOKIE_SECURE: bool = False
     COOKIE_SAMESITE: Literal["lax", "strict", "none"] = "lax"
+    # Number of reverse proxies in front of the API that append to
+    # X-Forwarded-For (nginx in docker-compose = 1). 0 ignores the header, so a
+    # client cannot spoof its IP to dodge rate limits and lockouts.
+    TRUSTED_PROXY_COUNT: int = Field(default=0, ge=0, le=5)
 
     # --- Encryption / key management --------------------------------------
     MASTER_KEY_ID: str = "dev-key-1"
@@ -87,6 +91,7 @@ class Settings(BaseSettings):
 
     # --- Uploads ----------------------------------------------------------
     MAX_UPLOAD_MB: int = 15
+    MAX_PAPER_UPLOAD_MB: int = 15
     ALLOWED_UPLOAD_EXTENSIONS: list[str] = ["pdf", "docx", "txt"]
 
     # --- Rate limits (per minute unless stated) ---------------------------
@@ -98,6 +103,7 @@ class Settings(BaseSettings):
     # --- Generation / release --------------------------------------------
     GEN_INLINE: bool = True  # run the generation job in-process (dev)
     GEN_POLL_SECONDS: int = 5
+    GEN_STALE_MINUTES: int = 30  # a RUNNING/QUEUED request older than this is treated as dead
     RELEASE_WINDOW_MINUTES: int = 120
     RELEASE_TOKEN_TTL_MINUTES: int = 10
     PRINT_EARLY_OPEN_MINUTES: int = 1440

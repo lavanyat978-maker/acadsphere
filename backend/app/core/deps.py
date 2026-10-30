@@ -47,6 +47,14 @@ class Principal:
         return bool(self.claims.get("mfa"))
 
 
+# A user holding a temporary password may only do these until they change it.
+PASSWORD_CHANGE_ALLOWED_PATHS = {
+    f"{settings.API_PREFIX}/auth/me",
+    f"{settings.API_PREFIX}/auth/password",
+    f"{settings.API_PREFIX}/auth/logout",
+}
+
+
 def _extract_token(request: Request) -> str | None:
     header = request.headers.get("authorization")
     if header and header.lower().startswith("bearer "):
@@ -71,6 +79,11 @@ def get_principal(request: Request, db: Session = Depends(get_db)) -> Principal:
         raise Unauthorized("Your session was invalidated. Please sign in again.", "SESSION_REVOKED")
     if claims.get("role") != user.role:
         raise Unauthorized("Session role mismatch. Please sign in again.", "ROLE_MISMATCH")
+    if user.must_change_password and request.url.path not in PASSWORD_CHANGE_ALLOWED_PATHS:
+        raise Forbidden(
+            "Set a new password before continuing. Your account was given a temporary password.",
+            code="PASSWORD_CHANGE_REQUIRED",
+        )
     return Principal(
         user=user,
         claims=claims,

@@ -59,10 +59,6 @@ from app.validation.pipeline import (
 logger = logging.getLogger("praxis.generation")
 
 
-class GenerationError(RuntimeError):
-    pass
-
-
 STAGE_PROGRESS = {
     "QUEUED": 5,
     "RETRIEVING": 15,
@@ -86,12 +82,6 @@ def _demo_note(mode: str) -> str:
         if mode == "DEMO"
         else "Questions were produced by a real model and passed automated validation."
     )
-
-
-def _mark_stage(db: Session, request: GenerationRequest, stage: str) -> None:
-    # Stage is derived from request/paper fields; stage stored in exam instructions? No.
-    # We keep a lightweight JSON on metadata-less request: reuse `error` only for errors.
-    db.flush()
 
 
 def _variant(spec: dict[str, Any], variant: int) -> dict[str, Any]:
@@ -332,33 +322,103 @@ def _pool_export(db: Session, exam_id: str) -> list[dict[str, Any]]:
     ]
 
 
+def mark_failed(
+    db: Session,
+    request: GenerationRequest,
+    error: str,
+    *,
+    update_exam: bool = True,
+) -> None:
+    """Close a generation request as FAILED and retire its unfinished paper.
+
+    Every failure path goes through here, so an exam is never left with a
+    request stuck in QUEUED/RUNNING or a paper stuck mid-pipeline: the next
+    attempt starts from a clean, new paper version.
+    """
+    request.status = GenerationStatus.FAILED
+    request.error = error
+    request.completed_at = _now()
+    exam = db.get(InternalExam, request.exam_id)
+    paper = (
+        db.execute(select(QuestionPaper).where(QuestionPaper.generation_request_id == request.id))
+        .scalars()
+        .first()
+    )
+    if paper is not None and PaperState(paper.state) not in paper_service.SECURED_STATES | paper_service.RELEASE_STATES:
+        paper_service.discard_paper(db, paper, reason=f"Generation failed: {error}"[:255])
+    elif exam is not None:
+        paper_service.seal_question_pool(db, exam.id)
+    if update_exam and exam is not None and exam.status in {ExamStatus.SUBMITTED, ExamStatus.PROCESSING}:
+        exam.status = ExamStatus.FAILED
+    record_audit(
+        db,
+        event="PAPER_GENERATION_FAILED",
+        actor_role="SYSTEM",
+        resource_type="generation_request",
+        resource_id=request.id,
+        success=False,
+        metadata={"exam_id": request.exam_id},
+    )
+    db.flush()
+
+
+def recover_interrupted() -> int:
+    """Fail requests orphaned by a restart. In-process generation does not survive one."""
+    with session_scope() as db:
+        orphaned = db.execute(
+            select(GenerationRequest).where(
+                GenerationRequest.status.in_([GenerationStatus.QUEUED, GenerationStatus.RUNNING])
+            )
+        ).scalars().all()
+        for request in orphaned:
+            mark_failed(db, request, "Generation was interrupted by a server restart. Start it again.")
+        return len(orphaned)
+
+
 def run_generation(request_id: str) -> None:
-    """Execute one generation request end-to-end. Safe to run in a worker."""
+    """Execute one generation request end-to-end. Safe to run in a worker.
+
+    Any unexpected error rolls back the partial work and then records the
+    failure in a fresh transaction, so the exam can be retried.
+    """
+    try:
+        _run_generation(request_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("generation crashed", extra={"event": "generation_crashed", "request_id": request_id})
+        with session_scope() as db:
+            request = db.get(GenerationRequest, request_id)
+            if request is not None and request.status in {GenerationStatus.QUEUED, GenerationStatus.RUNNING}:
+                mark_failed(
+                    db,
+                    request,
+                    f"Generation stopped unexpectedly ({type(exc).__name__}). No paper was secured. Try again.",
+                )
+
+
+def _run_generation(request_id: str) -> None:
     with session_scope() as db:
         request = db.get(GenerationRequest, request_id)
         if request is None:
             logger.warning("generation request missing", extra={"event": "generation_missing"})
             return
-        if request.status not in {GenerationStatus.QUEUED, GenerationStatus.FAILED}:
+        if request.status != GenerationStatus.QUEUED:
             return
         exam = db.get(InternalExam, request.exam_id)
-        if exam is None:
-            request.status = GenerationStatus.FAILED
-            request.error = "Examination no longer exists"
+        if exam is None or exam.status == ExamStatus.CANCELLED:
+            mark_failed(db, request, "Examination no longer exists or was cancelled.", update_exam=False)
             return
         config = db.execute(
             select(ExamConfiguration).where(ExamConfiguration.exam_id == exam.id)
         ).scalar_one_or_none()
         if config is None or not config.frozen:
-            request.status = GenerationStatus.FAILED
-            request.error = "Exam configuration is missing or not frozen"
-            db.flush()
+            mark_failed(db, request, "Exam configuration is missing or not frozen")
             return
 
+        provider = build_provider()
         request.status = GenerationStatus.RUNNING
         request.started_at = _now()
-        request.provider = build_provider().name
-        request.mode = build_provider().mode
+        request.provider = provider.name
+        request.mode = provider.mode
         exam.status = ExamStatus.PROCESSING
         db.flush()
 
@@ -376,24 +436,20 @@ def run_generation(request_id: str) -> None:
             },
         )
 
-        paper = (
-            db.execute(
-                select(QuestionPaper).where(
-                    QuestionPaper.exam_id == exam.id, QuestionPaper.version == 1
-                )
-            ).scalar_one_or_none()
+        previous = paper_service.latest_paper(db, exam.id)
+        if previous is not None:
+            state = PaperState(previous.state)
+            if state in paper_service.SECURED_STATES | paper_service.RELEASE_STATES:
+                mark_failed(db, request, "This examination already has a secured paper.", update_exam=False)
+                exam.status = ExamStatus.SECURED
+                return
+            if state != PaperState.DISCARDED:
+                paper_service.discard_paper(db, previous, reason="Superseded by a new generation attempt")
+        paper = paper_service.create_paper(db, exam_id=exam.id, generation_request_id=request.id)
+        paper_service.transition(
+            db, paper, PaperState.GENERATING, actor_role="SYSTEM", reason="Generation started"
         )
-        if paper is None:
-            paper = paper_service.create_paper(
-                db, exam_id=exam.id, generation_request_id=request.id, version=1
-            )
-        if PaperState(paper.state) == PaperState.SUBMITTED:
-            paper_service.transition(
-                db, paper, PaperState.GENERATING, actor_role="SYSTEM", reason="Generation started"
-            )
-        request.paper_id = paper.id  # convenience for API layer (set on request object)
 
-        provider = build_provider()
         subject = db.get(Subject, exam.subject_id)
         topic_rows = (
             db.execute(
@@ -404,7 +460,8 @@ def run_generation(request_id: str) -> None:
             .all()
         )
         if not topic_rows:
-            raise GenerationError("No examination topics configured")
+            mark_failed(db, request, "No examination topics are configured.")
+            return
         topic_names = {topic.id: topic.name for topic, _ in topic_rows}
         topic_weights = {topic.id: weight for topic, weight in topic_rows}
 
@@ -472,14 +529,12 @@ def run_generation(request_id: str) -> None:
                     success=False,
                     metadata={"marks": slot["marks"], "topic": demand_item["topic_name"]},
                 )
-                request.status = GenerationStatus.FAILED
-                request.error = (
+                mark_failed(
+                    db,
+                    request,
                     "No candidate passed validation within the retry limit for one question slot. "
-                    "Nothing was included in the paper. Refine topics/marks or upload richer syllabus material."
+                    "Nothing was included in the paper. Refine topics/marks or upload richer syllabus material.",
                 )
-                request.completed_at = _now()
-                exam.status = ExamStatus.FAILED
-                db.flush()
                 return
             generated += 1
 
@@ -563,7 +618,7 @@ def run_generation(request_id: str) -> None:
                 "venue": exam.venue,
                 "instructions": exam.instructions or config.instructions,
                 "total_marks": exam.total_marks,
-                "paper_version": 1,
+                "paper_version": paper.version,
             }
             payload = render_paper_payload(
                 exam=exam_meta,
@@ -601,13 +656,6 @@ def run_generation(request_id: str) -> None:
             assembled = None
 
         if assembled is None or final_validation is None or not final_validation["passed"]:
-            request.status = GenerationStatus.FAILED
-            request.error = (
-                "Paper assembly could not satisfy the configured marks/topic/difficulty/Bloom "
-                "constraints. No paper was created. Adjust the configuration and regenerate."
-            )
-            request.completed_at = _now()
-            exam.status = ExamStatus.FAILED
             db.add(
                 ValidationResult(
                     exam_id=exam.id,
@@ -619,7 +667,12 @@ def run_generation(request_id: str) -> None:
                     issues=(final_validation or {}).get("issues", [])[:20],
                 )
             )
-            db.flush()
+            mark_failed(
+                db,
+                request,
+                "Paper assembly could not satisfy the configured marks/topic/difficulty/Bloom "
+                "constraints. No paper was created. Adjust the configuration and regenerate.",
+            )
             return
 
         paper.structure = {
@@ -681,9 +734,11 @@ def run_generation(request_id: str) -> None:
 
 
 def request_status(db: Session, request: GenerationRequest) -> dict[str, Any]:
-    paper = None
-    if getattr(request, "paper_id", None):
-        paper = db.get(QuestionPaper, request.paper_id)
+    paper = (
+        db.execute(select(QuestionPaper).where(QuestionPaper.generation_request_id == request.id))
+        .scalars()
+        .first()
+    )
     if paper is None:
         paper = (
             db.execute(

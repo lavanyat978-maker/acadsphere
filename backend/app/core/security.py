@@ -23,6 +23,30 @@ _hasher = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4)
 _DUMMY_HASH: str | None = None
 
 
+def password_policy_problem(password: str) -> str | None:
+    """Return why a password is too weak, or None when it is acceptable."""
+    if len(password) < settings.PASSWORD_MIN_LENGTH:
+        return f"Password must be at least {settings.PASSWORD_MIN_LENGTH} characters"
+    classes = sum(
+        [
+            any(char.islower() for char in password),
+            any(char.isupper() for char in password),
+            any(char.isdigit() for char in password),
+            any(not char.isalnum() for char in password),
+        ]
+    )
+    if classes < 3:
+        return "Password must mix at least three of: lower, upper, digit, symbol"
+    return None
+
+
+def generate_temporary_password() -> str:
+    """A policy-compliant one-time password handed to a user by the HOD."""
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+    body = "".join(secrets.choice(alphabet) for _ in range(12))
+    return f"{body[:4]}-{body[4:8]}-{body[8:]}#{secrets.randbelow(90) + 10}"
+
+
 def hash_password(password: str) -> str:
     return _hasher.hash(password)
 
@@ -53,7 +77,7 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-TokenKind = Literal["access", "mfa_challenge"]
+TokenKind = Literal["access", "mfa_challenge", "mfa_enroll"]
 
 
 def create_token(

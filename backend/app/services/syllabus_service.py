@@ -179,7 +179,7 @@ def delete_document(db: Session, actor: User, document_id: str, ip: str = "") ->
     if path:
         try:
             get_storage().delete(path)
-        except StorageError:
+        except Exception:  # noqa: BLE001 - the record is gone; an orphaned blob is only a cleanup task
             pass
 
 

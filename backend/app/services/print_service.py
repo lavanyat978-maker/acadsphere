@@ -225,3 +225,34 @@ def render_paper_pdf(payload: dict[str, Any]) -> bytes:
     pdf = buffer.getvalue()
     buffer.close()
     return pdf
+
+
+def stamp_uploaded_pdf(pdf_bytes: bytes, label: str) -> bytes:
+    """Overlay a controlled-copy footer on every page of an uploaded paper.
+
+    The stamp identifies which of the capped copies a printout is, so a leaked
+    sheet can be traced back to one audited print.
+    """
+    from pypdf import PdfReader, PdfWriter
+    from reportlab.pdfgen import canvas as pdf_canvas
+
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    writer = PdfWriter()
+    total = len(reader.pages)
+    for index, page in enumerate(reader.pages, start=1):
+        width = float(page.mediabox.width)
+        height = float(page.mediabox.height)
+        overlay_buffer = io.BytesIO()
+        overlay = pdf_canvas.Canvas(overlay_buffer, pagesize=(width, height))
+        overlay.setFont("Helvetica", 7)
+        overlay.setFillColor(colors.HexColor("#64748b"))
+        overlay.drawString(12 * mm, 6 * mm, f"Praxis - {label}")
+        overlay.drawRightString(width - 12 * mm, 6 * mm, f"Page {index} of {total}")
+        overlay.save()
+        overlay_page = PdfReader(io.BytesIO(overlay_buffer.getvalue())).pages[0]
+        page.merge_page(overlay_page)
+        writer.add_page(page)
+    writer.add_metadata({"/Producer": "Praxis controlled print"})
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue()

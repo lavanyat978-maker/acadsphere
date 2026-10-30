@@ -1,18 +1,24 @@
-"""Online practice module (fully independent from the secure internal exam workflow)."""
+"""Online practice module (fully independent from the secure internal exam workflow).
+
+Access rules live in `app.services.access`:
+* students see published tests only in subjects they are enrolled in;
+* teachers see every test in their assigned subjects but change only their own;
+* the HOD sees and changes everything.
+"""
 from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.ai.provider import build_provider
 from app.analytics.engine import attempt_history, teacher_test_analytics
 from app.core.errors import Conflict, Forbidden, NotFound
 from app.core.timeutils import ensure_utc
-from app.models.enums import AttemptStatus, PracticeTestStatus, Role
+from app.models.enums import AttemptStatus, BloomLevel, Difficulty, PracticeTestStatus, Role
 from app.models.tables import (
     PracticeAnswer,
     PracticeAttempt,
@@ -26,14 +32,31 @@ from app.models.tables import (
 )
 from app.rag.pipeline import retrieve
 from app.schemas.practice import (
+    GeneratePracticeQuestionsRequest,
     PracticeQuestionCreate,
     PracticeTestCreate,
     PracticeTestUpdate,
-    GeneratePracticeQuestionsRequest,
 )
-from app.services.academic_service import ensure_subject_access, teacher_has_subject
+from app.services.access import (
+    can_edit_test,
+    ensure_edit_test,
+    ensure_subject_staff,
+    ensure_view_test,
+    student_subject_ids,
+    teacher_subject_ids,
+)
 
+# Submissions this long after the deadline are still accepted as on-time, to
+# absorb network latency. Anything later is graded from the autosave instead.
 GRACE_SECONDS = 30
+
+# Allowed status changes. Moving back to DRAFT is only possible while nobody has
+# attempted the test, otherwise edits would silently rewrite past results.
+STATUS_TRANSITIONS: dict[str, set[str]] = {
+    PracticeTestStatus.DRAFT: {PracticeTestStatus.PUBLISHED, PracticeTestStatus.ARCHIVED},
+    PracticeTestStatus.PUBLISHED: {PracticeTestStatus.ARCHIVED, PracticeTestStatus.DRAFT},
+    PracticeTestStatus.ARCHIVED: {PracticeTestStatus.PUBLISHED, PracticeTestStatus.DRAFT},
+}
 
 
 def _now() -> datetime:
@@ -45,15 +68,18 @@ def _subject_name(db: Session, subject_id: str) -> str:
     return subject.name if subject else ""
 
 
+def _has_attempts(db: Session, test_id: str) -> bool:
+    return db.execute(select(PracticeAttempt.id).where(PracticeAttempt.test_id == test_id).limit(1)).first() is not None
+
+
 def _test_out(
     db: Session,
     test: PracticeTest,
     *,
-    student_id: str | None = None,
+    viewer: User | None = None,
 ) -> dict[str, Any]:
-    attempts = db.execute(
-        select(PracticeAttempt).where(PracticeAttempt.test_id == test.id)
-    ).scalars().all()
+    student_id = viewer.id if viewer is not None and viewer.role == Role.STUDENT else None
+    attempts = db.execute(select(PracticeAttempt).where(PracticeAttempt.test_id == test.id)).scalars().all()
     own = [attempt for attempt in attempts if attempt.student_id == student_id] if student_id else []
     best = None
     last_at = None
@@ -66,6 +92,7 @@ def _test_out(
         if results:
             best = round(max(result.percentage for result in results), 2)
             last_at = max(result.created_at for result in results)
+    creator = db.get(User, test.created_by) if viewer is not None and viewer.role != Role.STUDENT else None
     return {
         "id": test.id,
         "subject_id": test.subject_id,
@@ -81,6 +108,8 @@ def _test_out(
         "attempt_count": len(own) if student_id else len(attempts),
         "best_score": best,
         "last_attempt_at": last_at,
+        "can_edit": bool(viewer is not None and can_edit_test(viewer, test)),
+        "created_by_name": creator.full_name if creator else "",
     }
 
 
@@ -101,8 +130,18 @@ def _question_out(question: PracticeQuestion, *, include_answers: bool) -> dict[
     }
 
 
+def test_detail(db: Session, test: PracticeTest, *, viewer: User | None = None, include_answers: bool = True) -> dict[str, Any]:
+    base = _test_out(db, test, viewer=viewer)
+    base["questions"] = [
+        _question_out(question, include_answers=include_answers)
+        for question in sorted(test.questions, key=lambda item: item.position)
+    ]
+    return base
+
+
+# --- Authoring ------------------------------------------------------------
 def create_test(db: Session, teacher: User, payload: PracticeTestCreate) -> dict[str, Any]:
-    subject = ensure_subject_access(db, teacher, payload.subject_id)
+    subject = ensure_subject_staff(db, teacher, payload.subject_id)
     topic_rows = db.execute(
         select(Topic).where(Topic.subject_id == subject.id, Topic.id.in_(payload.topic_ids))
     ).scalars().all()
@@ -119,14 +158,14 @@ def create_test(db: Session, teacher: User, payload: PracticeTestCreate) -> dict
     )
     db.add(test)
     db.flush()
-    for topic_id in payload.topic_ids:
+    for topic_id in dict.fromkeys(payload.topic_ids):
         db.add(PracticeTestTopic(test_id=test.id, topic_id=topic_id))
     db.flush()
     for index, question in enumerate(payload.questions):
         _add_question(db, test, question, index)
     _sync_counts(db, test)
     db.flush()
-    return {"test_id": test.id, "detail": test_detail(db, test, include_answers=True)}
+    return {"test_id": test.id, "detail": test_detail(db, test, viewer=teacher)}
 
 
 def _add_question(db: Session, test: PracticeTest, payload: PracticeQuestionCreate, index: int) -> PracticeQuestion:
@@ -152,9 +191,7 @@ def _add_question(db: Session, test: PracticeTest, payload: PracticeQuestionCrea
 
 def _sync_counts(db: Session, test: PracticeTest) -> None:
     db.flush()
-    questions = db.execute(
-        select(PracticeQuestion).where(PracticeQuestion.test_id == test.id)
-    ).scalars().all()
+    questions = db.execute(select(PracticeQuestion).where(PracticeQuestion.test_id == test.id)).scalars().all()
     test.question_count = len(questions)
     test.total_marks = sum(question.marks for question in questions)
 
@@ -162,49 +199,49 @@ def _sync_counts(db: Session, test: PracticeTest) -> None:
 def list_tests(db: Session, user: User, subject_id: str | None = None) -> list[dict[str, Any]]:
     query = select(PracticeTest)
     if user.role == Role.TEACHER:
-        query = query.where(PracticeTest.created_by == user.id)
+        assigned = teacher_subject_ids(db, user.id)
+        query = query.where(or_(PracticeTest.created_by == user.id, PracticeTest.subject_id.in_(assigned)))
     elif user.role == Role.STUDENT:
-        query = query.where(PracticeTest.status == PracticeTestStatus.PUBLISHED)
+        enrolled = student_subject_ids(db, user.id)
+        if not enrolled:
+            return []
+        query = query.where(
+            PracticeTest.status == PracticeTestStatus.PUBLISHED, PracticeTest.subject_id.in_(enrolled)
+        )
     if subject_id:
         query = query.where(PracticeTest.subject_id == subject_id)
     tests = db.execute(query.order_by(PracticeTest.created_at.desc())).scalars().all()
-    return [
-        _test_out(db, test, student_id=user.id if user.role == Role.STUDENT else None)
-        for test in tests
-    ]
+    return [_test_out(db, test, viewer=user) for test in tests]
 
 
-def get_test(db: Session, user: User, test_id: str, *, include_answers: bool = False) -> dict[str, Any]:
+def _student_test(db: Session, student: User, test_id: str) -> PracticeTest:
     test = db.get(PracticeTest, test_id)
     if test is None:
         raise NotFound("Practice test")
-    if user.role == Role.STUDENT and test.status != PracticeTestStatus.PUBLISHED:
+    if test.status != PracticeTestStatus.PUBLISHED:
         raise Forbidden("This practice test is not published.", code="TEST_NOT_PUBLISHED")
-    if user.role == Role.TEACHER and test.created_by != user.id:
-        raise Forbidden("You can only view your own practice tests.", code="NOT_TEST_OWNER")
-    base = _test_out(db, test, student_id=user.id if user.role == Role.STUDENT else None)
-    base["questions"] = [
-        _question_out(question, include_answers=include_answers)
-        for question in sorted(test.questions, key=lambda item: item.position)
-    ]
-    return base
+    if test.subject_id not in student_subject_ids(db, student.id):
+        raise Forbidden("You are not enrolled in this subject.", code="NOT_ENROLLED")
+    return test
 
 
-def test_detail(db: Session, test: PracticeTest, *, include_answers: bool = True) -> dict[str, Any]:
-    base = _test_out(db, test)
-    base["questions"] = [
-        _question_out(question, include_answers=include_answers)
-        for question in sorted(test.questions, key=lambda item: item.position)
-    ]
-    return base
+def get_test(db: Session, user: User, test_id: str, *, include_answers: bool = False) -> dict[str, Any]:
+    if user.role == Role.STUDENT:
+        test = _student_test(db, user, test_id)
+        include_answers = False
+    else:
+        test = ensure_view_test(db, user, test_id)
+    return test_detail(db, test, viewer=user, include_answers=include_answers)
 
 
-def update_test(db: Session, teacher: User, test_id: str, payload: PracticeTestUpdate) -> dict[str, Any]:
-    test = _owned_test(db, teacher, test_id)
-    attempts = db.execute(
-        select(PracticeAttempt).where(PracticeAttempt.test_id == test.id)
-    ).scalars().all()
-    if attempts and test.status == PracticeTestStatus.PUBLISHED:
+def _ensure_editable_content(db: Session, test: PracticeTest) -> None:
+    if test.status != PracticeTestStatus.DRAFT:
+        raise Conflict("Questions can only be changed while the test is a draft.", "TEST_NOT_DRAFT")
+
+
+def update_test(db: Session, user: User, test_id: str, payload: PracticeTestUpdate) -> dict[str, Any]:
+    test = ensure_edit_test(db, user, test_id)
+    if test.status == PracticeTestStatus.PUBLISHED and _has_attempts(db, test.id):
         raise Conflict(
             "A published test with attempts cannot be edited. Archive it and create a new test.",
             "TEST_LOCKED",
@@ -212,71 +249,117 @@ def update_test(db: Session, teacher: User, test_id: str, payload: PracticeTestU
     for field, value in payload.model_dump(exclude_none=True).items():
         setattr(test, field, value)
     db.flush()
-    return test_detail(db, test)
+    return test_detail(db, test, viewer=user)
 
 
-def set_status(db: Session, teacher: User, test_id: str, status: str) -> dict[str, Any]:
-    test = _owned_test(db, teacher, test_id)
-    if status == PracticeTestStatus.PUBLISHED:
+def set_status(db: Session, user: User, test_id: str, status: str) -> dict[str, Any]:
+    test = ensure_edit_test(db, user, test_id)
+    current = PracticeTestStatus(test.status)
+    target = PracticeTestStatus(status)
+    if target == current:
+        return test_detail(db, test, viewer=user)
+    if target not in STATUS_TRANSITIONS[current]:
+        raise Conflict(f"A {current.lower()} test cannot move to {target.lower()}.", "INVALID_TEST_STATUS")
+    if target == PracticeTestStatus.DRAFT and _has_attempts(db, test.id):
+        raise Conflict(
+            "Students have already attempted this test, so it cannot return to draft. "
+            "Archive it and create a new version instead.",
+            "TEST_HAS_ATTEMPTS",
+        )
+    if target == PracticeTestStatus.PUBLISHED:
         _sync_counts(db, test)
         if test.question_count == 0:
             raise Conflict("Add at least one question before publishing.", "EMPTY_TEST")
         test.published_at = _now()
-    test.status = status
+    test.status = target
     db.flush()
-    return test_detail(db, test)
+    return test_detail(db, test, viewer=user)
 
 
-def _owned_test(db: Session, teacher: User, test_id: str) -> PracticeTest:
-    test = db.get(PracticeTest, test_id)
-    if test is None:
-        raise NotFound("Practice test")
-    if test.created_by != teacher.id:
-        raise Forbidden("You can only manage your own practice tests.", code="NOT_TEST_OWNER")
-    return test
-
-
-def add_questions(
-    db: Session, teacher: User, test_id: str, payloads: list[PracticeQuestionCreate]
-) -> dict[str, Any]:
-    test = _owned_test(db, teacher, test_id)
-    if test.status != PracticeTestStatus.DRAFT:
-        raise Conflict("Questions can only be added while the test is a draft.", "TEST_NOT_DRAFT")
-    existing = db.execute(
-        select(PracticeQuestion).where(PracticeQuestion.test_id == test.id)
-    ).scalars().all()
+def add_questions(db: Session, user: User, test_id: str, payloads: list[PracticeQuestionCreate]) -> dict[str, Any]:
+    test = ensure_edit_test(db, user, test_id)
+    _ensure_editable_content(db, test)
+    existing = db.execute(select(PracticeQuestion).where(PracticeQuestion.test_id == test.id)).scalars().all()
     offset = len(existing)
     seen = {question.question_text.strip().lower() for question in existing}
-    for index, payload in enumerate(payloads):
+    added = 0
+    for payload in payloads:
         if payload.question_text.strip().lower() in seen:
             continue
-        _add_question(db, test, payload, offset + index)
+        _add_question(db, test, payload, offset + added)
         seen.add(payload.question_text.strip().lower())
+        added += 1
     _sync_counts(db, test)
     db.flush()
-    return test_detail(db, test)
+    db.refresh(test)
+    return test_detail(db, test, viewer=user)
+
+
+def _question_for(db: Session, test: PracticeTest, question_id: str) -> PracticeQuestion:
+    question = db.get(PracticeQuestion, question_id)
+    if question is None or question.test_id != test.id:
+        raise NotFound("Question")
+    return question
+
+
+def update_question(
+    db: Session, user: User, test_id: str, question_id: str, payload: PracticeQuestionCreate
+) -> dict[str, Any]:
+    test = ensure_edit_test(db, user, test_id)
+    _ensure_editable_content(db, test)
+    question = _question_for(db, test, question_id)
+    if payload.topic_id not in {link.topic_id for link in test.topics}:
+        raise Conflict("Question topic must be one of the test topics.", "INVALID_QUESTION_TOPIC")
+    question.topic_id = payload.topic_id
+    question.question_text = payload.question_text
+    question.question_type = payload.question_type
+    question.options = [option.model_dump() for option in payload.options]
+    question.correct_answers = list(payload.correct_answers)
+    question.explanation = payload.explanation
+    question.marks = payload.marks
+    question.difficulty = payload.difficulty
+    question.bloom_level = payload.bloom_level
+    _sync_counts(db, test)
+    db.flush()
+    return test_detail(db, test, viewer=user)
+
+
+def delete_question(db: Session, user: User, test_id: str, question_id: str) -> dict[str, Any]:
+    test = ensure_edit_test(db, user, test_id)
+    _ensure_editable_content(db, test)
+    question = _question_for(db, test, question_id)
+    db.delete(question)
+    db.flush()
+    remaining = db.execute(
+        select(PracticeQuestion).where(PracticeQuestion.test_id == test.id).order_by(PracticeQuestion.position)
+    ).scalars().all()
+    for index, item in enumerate(remaining):
+        item.position = index
+    _sync_counts(db, test)
+    db.flush()
+    db.refresh(test)
+    return test_detail(db, test, viewer=user)
+
+
+def _enum_or(value: Any, enum: type, default: str) -> str:
+    text = str(value or "").strip().upper()
+    return text if text in {member.value for member in enum} else default
 
 
 def generate_questions(
-    db: Session, teacher: User, test_id: str, payload: GeneratePracticeQuestionsRequest
+    db: Session, user: User, test_id: str, payload: GeneratePracticeQuestionsRequest
 ) -> dict[str, Any]:
-    test = _owned_test(db, teacher, test_id)
-    if test.status != PracticeTestStatus.DRAFT:
-        raise Conflict("Generate questions while the test is a draft.", "TEST_NOT_DRAFT")
+    test = ensure_edit_test(db, user, test_id)
+    _ensure_editable_content(db, test)
     topic_links = {link.topic_id: link.topic for link in test.topics if link.topic}
     if not topic_links:
         raise Conflict("Select at least one topic first.", "NO_TOPICS")
-    topics = [topic_links[payload.topic_id]] if payload.topic_id else list(topic_links.values())
     if payload.topic_id and payload.topic_id not in topic_links:
         raise Conflict("That topic is not part of this test.", "INVALID_TOPIC")
+    topics = [topic_links[payload.topic_id]] if payload.topic_id else list(topic_links.values())
     subject = db.get(Subject, test.subject_id)
     provider = build_provider()
-    context = retrieve(
-        db,
-        subject_id=test.subject_id,
-        query=" ".join(topic.name for topic in topics),
-        top_k=5,
-    )
+    context = retrieve(db, subject_id=test.subject_id, query=" ".join(topic.name for topic in topics), top_k=5)
     generated = provider.generate_practice_questions(
         subject=subject.name if subject else "",
         topics=[topic.name for topic in topics],
@@ -284,9 +367,7 @@ def generate_questions(
         difficulty=(payload.difficulty or test.difficulty),
         context=context,
     )
-    existing = db.execute(
-        select(PracticeQuestion).where(PracticeQuestion.test_id == test.id)
-    ).scalars().all()
+    existing = db.execute(select(PracticeQuestion).where(PracticeQuestion.test_id == test.id)).scalars().all()
     if payload.replace_existing and existing:
         for question in existing:
             db.delete(question)
@@ -298,31 +379,32 @@ def generate_questions(
     added = 0
     for item in generated:
         text = str(item.get("question_text", "")).strip()
-        if not text or text.lower() in seen:
+        if len(text) < 5 or text.lower() in seen:
             continue
-        topic = name_to_topic.get(str(item.get("topic", "")).strip().lower())
-        if topic is None:
-            topic = topics[added % len(topics)]
-        options = item.get("options") or []
-        if len(options) < 2:
+        topic = name_to_topic.get(str(item.get("topic", "")).strip().lower()) or topics[added % len(topics)]
+        options = [
+            {"id": str(option.get("id", "")).strip()[:4], "text": str(option.get("text", "")).strip()[:600]}
+            for option in (item.get("options") or [])
+            if isinstance(option, dict) and str(option.get("id", "")).strip() and str(option.get("text", "")).strip()
+        ]
+        option_ids = [option["id"] for option in options]
+        if len(options) < 2 or len(set(option_ids)) != len(option_ids):
             continue
-        correct = [str(value) for value in (item.get("correct_answers") or [])]
-        option_ids = {str(option.get("id")) for option in options}
-        correct = [value for value in correct if value in option_ids][:1]
+        correct = [str(value) for value in (item.get("correct_answers") or []) if str(value) in option_ids][:1]
         if not correct:
             continue
         db.add(
             PracticeQuestion(
                 test_id=test.id,
                 topic_id=topic.id,
-                question_text=text,
+                question_text=text[:2000],
                 question_type="SINGLE_CHOICE",
                 options=options,
                 correct_answers=correct,
                 explanation=str(item.get("explanation", ""))[:2000],
                 marks=1,
-                difficulty=str(item.get("difficulty", test.difficulty)).upper(),
-                bloom_level=str(item.get("bloom_level", "UNDERSTAND")).upper(),
+                difficulty=_enum_or(item.get("difficulty"), Difficulty, test.difficulty),
+                bloom_level=_enum_or(item.get("bloom_level"), BloomLevel, BloomLevel.UNDERSTAND),
                 position=offset + added,
             )
         )
@@ -332,7 +414,8 @@ def generate_questions(
             break
     _sync_counts(db, test)
     db.flush()
-    detail = test_detail(db, test)
+    db.refresh(test)
+    detail = test_detail(db, test, viewer=user)
     detail["_meta"] = {
         "generated": added,
         "mode": provider.mode,
@@ -346,12 +429,9 @@ def generate_questions(
     return detail
 
 
+# --- Attempts ---------------------------------------------------------------
 def start_attempt(db: Session, student: User, test_id: str) -> dict[str, Any]:
-    test = db.get(PracticeTest, test_id)
-    if test is None:
-        raise NotFound("Practice test")
-    if test.status != PracticeTestStatus.PUBLISHED:
-        raise Forbidden("This practice test is not published.", code="TEST_NOT_PUBLISHED")
+    test = _student_test(db, student, test_id)
     if not test.questions:
         raise Conflict("This test has no questions yet.", "EMPTY_TEST")
 
@@ -365,7 +445,7 @@ def start_attempt(db: Session, student: User, test_id: str) -> dict[str, Any]:
     for attempt in existing:
         if ensure_utc(attempt.expires_at) > _now():
             return _attempt_payload(attempt, test)
-        _auto_submit_expired(db, attempt, test)
+        _finalize_expired(db, attempt, test)
 
     attempt = PracticeAttempt(
         test_id=test.id,
@@ -374,6 +454,7 @@ def start_attempt(db: Session, student: User, test_id: str) -> dict[str, Any]:
         started_at=_now(),
         expires_at=_now() + timedelta(minutes=test.duration_minutes),
         max_score=float(test.total_marks or sum(q.marks for q in test.questions)),
+        draft_answers={},
     )
     db.add(attempt)
     db.flush()
@@ -392,8 +473,11 @@ def _attempt_payload(attempt: PracticeAttempt, test: PracticeTest) -> dict[str, 
         "server_time": _now(),
         "total_marks": test.total_marks or sum(question.marks for question in test.questions),
         "warning": (
-            "Timer is validated on the server. Answers submitted after the deadline are auto-submitted."
+            "Timer is enforced by the server. Answers are saved as you go; whatever is saved "
+            "at the deadline is graded automatically."
         ),
+        "saved_answers": dict(attempt.draft_answers or {}),
+        "last_saved_at": attempt.last_saved_at,
         "questions": [
             _question_out(question, include_answers=False)
             for question in sorted(test.questions, key=lambda item: item.position)
@@ -401,7 +485,7 @@ def _attempt_payload(attempt: PracticeAttempt, test: PracticeTest) -> dict[str, 
     }
 
 
-def get_attempt(db: Session, student: User, attempt_id: str) -> dict[str, Any]:
+def _owned_attempt(db: Session, student: User, attempt_id: str) -> tuple[PracticeAttempt, PracticeTest]:
     attempt = db.get(PracticeAttempt, attempt_id)
     if attempt is None:
         raise NotFound("Attempt")
@@ -410,74 +494,79 @@ def get_attempt(db: Session, student: User, attempt_id: str) -> dict[str, Any]:
     test = db.get(PracticeTest, attempt.test_id)
     if test is None:
         raise NotFound("Practice test")
-    if attempt.status == AttemptStatus.IN_PROGRESS and ensure_utc(attempt.expires_at) < _now():
-        _auto_submit_expired(db, attempt, test)
+    return attempt, test
+
+
+def _deadline_passed(attempt: PracticeAttempt, *, grace: bool = True) -> bool:
+    deadline = ensure_utc(attempt.expires_at) + timedelta(seconds=GRACE_SECONDS if grace else 0)
+    return _now() > deadline
+
+
+def get_attempt(db: Session, student: User, attempt_id: str) -> dict[str, Any]:
+    attempt, test = _owned_attempt(db, student, attempt_id)
+    if attempt.status == AttemptStatus.IN_PROGRESS and _deadline_passed(attempt):
+        _finalize_expired(db, attempt, test)
     return _attempt_payload(attempt, test)
 
 
-def _auto_submit_expired(db: Session, attempt: PracticeAttempt, test: PracticeTest) -> None:
-    attempt.status = AttemptStatus.EXPIRED
-    attempt.submitted_at = attempt.expires_at
-    attempt.auto_submitted = True
-    attempt.duration_seconds = int(
-        (ensure_utc(attempt.expires_at) - ensure_utc(attempt.started_at)).total_seconds()
-    )
-    attempt.score = 0
-    attempt.accuracy = 0
-    db.add(
-        PracticeResult(
-            attempt_id=attempt.id,
-            test_id=test.id,
-            student_id=attempt.student_id,
-            score=0,
-            max_score=attempt.max_score,
-            percentage=0,
-            accuracy=0,
-            avg_response_time=0,
-            topic_breakdown=[],
-            difficulty_breakdown=[],
-        )
-    )
-    db.flush()
-
-
-def submit_attempt(
-    db: Session, student: User, attempt_id: str, answers: list[dict[str, Any]]
-) -> dict[str, Any]:
-    attempt = db.get(PracticeAttempt, attempt_id)
-    if attempt is None:
-        raise NotFound("Attempt")
-    if attempt.student_id != student.id:
-        raise Forbidden("You can only submit your own attempts.", code="ATTEMPT_NOT_OWNED")
-    if attempt.status != AttemptStatus.IN_PROGRESS:
-        raise Conflict("This attempt was already submitted.", "ATTEMPT_CLOSED")
-    test = db.get(PracticeTest, attempt.test_id)
-    if test is None:
-        raise NotFound("Practice test")
-
-    now = _now()
-    expires_at = ensure_utc(attempt.expires_at)
-    started_at = ensure_utc(attempt.started_at)
-    late = now > expires_at + timedelta(seconds=GRACE_SECONDS)
+def _normalize_answers(test: PracticeTest, answers: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Keep only answers to questions in this test, with option ids that exist."""
     questions = {question.id: question for question in test.questions}
-    submitted = {item["question_id"]: item for item in answers if item["question_id"] in questions}
+    normalized: dict[str, dict[str, Any]] = {}
+    for item in answers:
+        question = questions.get(item.get("question_id"))
+        if question is None:
+            continue
+        valid = {str(option.get("id")) for option in (question.options or [])}
+        selected = [str(value) for value in item.get("selected") or [] if str(value) in valid]
+        normalized[question.id] = {
+            "selected": list(dict.fromkeys(selected)),
+            "response_time_seconds": float(item.get("response_time_seconds") or 0),
+        }
+    return normalized
 
+
+def autosave_attempt(db: Session, student: User, attempt_id: str, answers: list[dict[str, Any]]) -> dict[str, Any]:
+    attempt, test = _owned_attempt(db, student, attempt_id)
+    if attempt.status != AttemptStatus.IN_PROGRESS:
+        raise Conflict("This attempt is already closed.", "ATTEMPT_CLOSED")
+    if _deadline_passed(attempt):
+        _finalize_expired(db, attempt, test)
+        raise Conflict("Time is up. Your saved answers have been submitted.", "ATTEMPT_EXPIRED")
+    merged = dict(attempt.draft_answers or {})
+    merged.update(_normalize_answers(test, answers))
+    attempt.draft_answers = merged
+    attempt.last_saved_at = _now()
+    db.flush()
+    return {
+        "saved": len(merged),
+        "last_saved_at": attempt.last_saved_at,
+        "expires_at": attempt.expires_at,
+        "server_time": _now(),
+    }
+
+
+def _grade(
+    db: Session,
+    attempt: PracticeAttempt,
+    test: PracticeTest,
+    answers: dict[str, dict[str, Any]],
+    *,
+    status: AttemptStatus,
+    submitted_at: datetime,
+) -> None:
+    questions = {question.id: question for question in test.questions}
     score = 0.0
     correct_count = 0
-    topic_stats: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {"correct": 0, "attempted": 0, "marks": 0.0}
-    )
-    difficulty_stats: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {"correct": 0, "attempted": 0}
-    )
+    topic_stats: dict[str, dict[str, Any]] = defaultdict(lambda: {"correct": 0, "attempted": 0, "marks": 0.0})
+    difficulty_stats: dict[str, dict[str, Any]] = defaultdict(lambda: {"correct": 0, "attempted": 0})
     response_times: list[float] = []
 
     for question in questions.values():
-        payload = submitted.get(question.id)
+        payload = answers.get(question.id)
         selected = list(payload["selected"]) if payload else []
         response_time = float(payload.get("response_time_seconds", 0)) if payload else 0.0
-        correct_set = set(question.correct_answers or [])
-        is_correct = bool(selected) and set(selected) == correct_set
+        is_correct = bool(selected) and set(selected) == set(question.correct_answers or [])
         awarded = float(question.marks) if is_correct else 0.0
         score += awarded
         correct_count += 1 if is_correct else 0
@@ -499,87 +588,111 @@ def submit_attempt(
         difficulty_stats[question.difficulty]["attempted"] += 1
         difficulty_stats[question.difficulty]["correct"] += 1 if is_correct else 0
 
+    expires_at = ensure_utc(attempt.expires_at)
+    started_at = ensure_utc(attempt.started_at)
     attempt.score = score
     attempt.max_score = float(sum(question.marks for question in questions.values()))
     attempt.accuracy = round(100.0 * correct_count / max(1, len(questions)), 2)
-    attempt.status = AttemptStatus.AUTO_SUBMITTED if late else AttemptStatus.SUBMITTED
-    attempt.auto_submitted = late
-    attempt.submitted_at = now
-    attempt.duration_seconds = max(0, int((min(now, expires_at) - started_at).total_seconds()))
+    attempt.status = status
+    attempt.auto_submitted = status != AttemptStatus.SUBMITTED
+    attempt.submitted_at = submitted_at
+    attempt.duration_seconds = max(0, int((min(submitted_at, expires_at) - started_at).total_seconds()))
     db.flush()
 
-    percentage = round(100.0 * score / attempt.max_score, 2) if attempt.max_score else 0.0
-    result = db.execute(
-        select(PracticeResult).where(PracticeResult.attempt_id == attempt.id)
-    ).scalar_one_or_none()
-    topic_breakdown = [
-        {
-            "topic_name": name,
-            "attempted": stats["attempted"],
-            "correct": stats["correct"],
-            "accuracy": round(100.0 * stats["correct"] / stats["attempted"], 2)
-            if stats["attempted"]
-            else 0.0,
-            "marks": stats["marks"],
-        }
-        for name, stats in sorted(topic_stats.items())
-    ]
-    difficulty_breakdown = [
-        {
-            "difficulty": name,
-            "attempted": stats["attempted"],
-            "correct": stats["correct"],
-            "accuracy": round(100.0 * stats["correct"] / stats["attempted"], 2)
-            if stats["attempted"]
-            else 0.0,
-        }
-        for name, stats in sorted(difficulty_stats.items())
-    ]
-    avg_response = round(sum(response_times) / max(1, len(response_times)), 2)
+    def breakdown(stats: dict[str, dict[str, Any]], key: str, with_marks: bool) -> list[dict[str, Any]]:
+        rows = []
+        for name, item in sorted(stats.items()):
+            row = {
+                key: name,
+                "attempted": item["attempted"],
+                "correct": item["correct"],
+                "accuracy": round(100.0 * item["correct"] / item["attempted"], 2) if item["attempted"] else 0.0,
+            }
+            if with_marks:
+                row["marks"] = item["marks"]
+            rows.append(row)
+        return rows
+
+    result = db.execute(select(PracticeResult).where(PracticeResult.attempt_id == attempt.id)).scalar_one_or_none()
     if result is None:
-        result = PracticeResult(
-            attempt_id=attempt.id,
-            test_id=test.id,
-            student_id=student.id,
-        )
+        result = PracticeResult(attempt_id=attempt.id, test_id=test.id, student_id=attempt.student_id)
         db.add(result)
     result.score = score
     result.max_score = attempt.max_score
-    result.percentage = percentage
+    result.percentage = round(100.0 * score / attempt.max_score, 2) if attempt.max_score else 0.0
     result.accuracy = attempt.accuracy
-    result.avg_response_time = avg_response
-    result.topic_breakdown = topic_breakdown
-    result.difficulty_breakdown = difficulty_breakdown
+    result.avg_response_time = round(sum(response_times) / max(1, len(response_times)), 2)
+    result.topic_breakdown = breakdown(topic_stats, "topic_name", True)
+    result.difficulty_breakdown = breakdown(difficulty_stats, "difficulty", False)
     db.flush()
-    return get_result(db, student, attempt.id, staff_view=True)
 
 
-def get_result(
-    db: Session, requester: User, attempt_id: str, *, staff_view: bool = False
-) -> dict[str, Any]:
+def _finalize_expired(db: Session, attempt: PracticeAttempt, test: PracticeTest) -> None:
+    """The deadline passed without a submission: grade what was autosaved."""
+    _grade(
+        db,
+        attempt,
+        test,
+        dict(attempt.draft_answers or {}),
+        status=AttemptStatus.EXPIRED,
+        submitted_at=ensure_utc(attempt.expires_at),
+    )
+
+
+def finalize_expired_attempts(db: Session, student_id: str | None = None) -> int:
+    """Close every overdue attempt (optionally one student's), grading autosaved answers."""
+    query = select(PracticeAttempt).where(PracticeAttempt.status == AttemptStatus.IN_PROGRESS)
+    if student_id:
+        query = query.where(PracticeAttempt.student_id == student_id)
+    closed = 0
+    for attempt in db.execute(query).scalars().all():
+        if _deadline_passed(attempt):
+            test = db.get(PracticeTest, attempt.test_id)
+            if test is not None:
+                _finalize_expired(db, attempt, test)
+                closed += 1
+    return closed
+
+
+def submit_attempt(db: Session, student: User, attempt_id: str, answers: list[dict[str, Any]]) -> dict[str, Any]:
+    attempt, test = _owned_attempt(db, student, attempt_id)
+    if attempt.status != AttemptStatus.IN_PROGRESS:
+        raise Conflict("This attempt was already submitted.", "ATTEMPT_CLOSED")
+    if _deadline_passed(attempt):
+        # Late: the payload is ignored. Only what was autosaved before the
+        # deadline counts, so the timer cannot be bypassed by submitting later.
+        _finalize_expired(db, attempt, test)
+    else:
+        merged = dict(attempt.draft_answers or {})
+        merged.update(_normalize_answers(test, answers))
+        attempt.draft_answers = merged
+        _grade(db, attempt, test, merged, status=AttemptStatus.SUBMITTED, submitted_at=_now())
+    return get_result(db, student, attempt.id)
+
+
+def get_result(db: Session, requester: User, attempt_id: str) -> dict[str, Any]:
     attempt = db.get(PracticeAttempt, attempt_id)
     if attempt is None:
         raise NotFound("Attempt")
-    if requester.role == Role.STUDENT and attempt.student_id != requester.id:
-        raise Forbidden("You can only access your own results.", code="RESULT_NOT_OWNED")
-    test = db.get(PracticeTest, attempt.test_id)
-    if test is None:
-        raise NotFound("Practice test")
-    if requester.role == Role.TEACHER:
-        if not teacher_has_subject(db, requester, test.subject_id):
-            raise Forbidden("You can only view results for your assigned subjects.")
+    if requester.role == Role.STUDENT:
+        if attempt.student_id != requester.id:
+            raise Forbidden("You can only access your own results.", code="RESULT_NOT_OWNED")
+        test = db.get(PracticeTest, attempt.test_id)
+        if test is None:
+            raise NotFound("Practice test")
+    else:
+        test = ensure_view_test(db, requester, attempt.test_id)
     if attempt.status == AttemptStatus.IN_PROGRESS:
-        raise Conflict("This attempt has not been submitted yet.", "ATTEMPT_OPEN")
-    result = db.execute(
-        select(PracticeResult).where(PracticeResult.attempt_id == attempt.id)
-    ).scalar_one_or_none()
+        if _deadline_passed(attempt):
+            _finalize_expired(db, attempt, test)
+        else:
+            raise Conflict("This attempt has not been submitted yet.", "ATTEMPT_OPEN")
+    result = db.execute(select(PracticeResult).where(PracticeResult.attempt_id == attempt.id)).scalar_one_or_none()
     if result is None:
         raise NotFound("Result")
     answers = {
         answer.question_id: answer
-        for answer in db.execute(
-            select(PracticeAnswer).where(PracticeAnswer.attempt_id == attempt.id)
-        ).scalars()
+        for answer in db.execute(select(PracticeAnswer).where(PracticeAnswer.attempt_id == attempt.id)).scalars()
     }
     review = []
     for question in sorted(test.questions, key=lambda item: item.position):
@@ -617,15 +730,27 @@ def get_result(
         "topic_breakdown": result.topic_breakdown,
         "difficulty_breakdown": result.difficulty_breakdown,
         "review": review,
-        "student_name": student.full_name if student and staff_view else None,
+        "student_name": student.full_name if student and requester.role != Role.STUDENT else None,
         "auto_submitted": attempt.auto_submitted,
     }
 
 
-def get_test_analytics(db: Session, teacher: User, test_id: str) -> dict[str, Any]:
-    test = _owned_test(db, teacher, test_id)
+def get_test_analytics(db: Session, user: User, test_id: str) -> dict[str, Any]:
+    test = ensure_view_test(db, user, test_id)
+    finalize_expired_attempts_for_test(db, test)
     return teacher_test_analytics(db, test)
 
 
+def finalize_expired_attempts_for_test(db: Session, test: PracticeTest) -> None:
+    for attempt in db.execute(
+        select(PracticeAttempt).where(
+            PracticeAttempt.test_id == test.id, PracticeAttempt.status == AttemptStatus.IN_PROGRESS
+        )
+    ).scalars():
+        if _deadline_passed(attempt):
+            _finalize_expired(db, attempt, test)
+
+
 def student_history(db: Session, student: User) -> list[dict[str, Any]]:
+    finalize_expired_attempts(db, student.id)
     return attempt_history(db, student.id)

@@ -3,15 +3,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.deps import Principal, require_hod, require_mfa, require_staff, require_teacher
+from app.core.deps import Principal, require_hod, require_mfa, require_staff
 from app.db.session import get_db
 from app.schemas.exam import (
     AuthzReleaseOut,
     AuthorizeReleaseRequest,
+    CancelExamRequest,
     DecryptOut,
     DecryptRequest,
     ExamConfigCreate,
@@ -104,7 +105,7 @@ def mark_released(
 
 @router.get("/scheduled")
 def scheduled(
-    principal: Principal = Depends(require_staff), db: Session = Depends(get_db)
+    principal: Principal = Depends(require_hod), db: Session = Depends(get_db)
 ) -> list[dict]:
     return exam_service.scheduled_exams(db, principal.user)
 
@@ -123,11 +124,10 @@ def paper_metadata(
 def paper_integrity(
     paper_id: str,
     principal: Principal = Depends(require_hod),
+    _mfa: Principal = Depends(require_mfa),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    from app.services import paper_service
-
-    return paper_service.verify_integrity(db, paper_id)
+    return exam_service.integrity_check(db, principal.user, paper_id, principal.ip)
 
 
 @router.get("/papers/{paper_id}/plaintext")
@@ -148,7 +148,7 @@ def deny_plaintext(
 @router.post("", response_model=ExamOut, status_code=201)
 def create_exam(
     payload: ExamConfigCreate,
-    principal: Principal = Depends(require_teacher),
+    principal: Principal = Depends(require_staff),
     db: Session = Depends(get_db),
 ) -> dict:
     exam = exam_service.create_exam(db, principal.user, payload)
@@ -172,10 +172,56 @@ def get_exam(
     return exam_service.get_exam(db, principal.user, exam_id)
 
 
+@router.put("/{exam_id}", response_model=ExamOut)
+def update_exam(
+    exam_id: str,
+    payload: ExamConfigCreate,
+    principal: Principal = Depends(require_staff),
+    db: Session = Depends(get_db),
+) -> dict:
+    exam_service.update_exam(db, principal.user, exam_id, payload, principal.ip)
+    db.commit()
+    return exam_service.get_exam(db, principal.user, exam_id)
+
+
+@router.post("/{exam_id}/cancel", response_model=ExamOut)
+def cancel_exam(
+    exam_id: str,
+    payload: CancelExamRequest,
+    principal: Principal = Depends(require_staff),
+    db: Session = Depends(get_db),
+) -> dict:
+    exam_service.cancel_exam(db, principal.user, exam_id, payload.reason, principal.ip)
+    db.commit()
+    return exam_service.get_exam(db, principal.user, exam_id)
+
+
+@router.post("/{exam_id}/paper", response_model=ExamOut, status_code=201)
+async def upload_paper(
+    exam_id: str,
+    file: UploadFile = File(...),
+    principal: Principal = Depends(require_staff),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Upload (or replace, until the release window opens) a prepared PDF paper."""
+    from starlette.concurrency import run_in_threadpool
+
+    data = await file.read(settings.MAX_PAPER_UPLOAD_MB * 1024 * 1024 + 1)
+
+    def work() -> dict:
+        exam_service.upload_paper(
+            db, principal.user, exam_id, filename=file.filename or "paper.pdf", data=data, ip=principal.ip
+        )
+        db.commit()
+        return exam_service.get_exam(db, principal.user, exam_id)
+
+    return await run_in_threadpool(work)
+
+
 @router.post("/{exam_id}/submit", response_model=ExamOut)
 def submit_exam(
     exam_id: str,
-    principal: Principal = Depends(require_teacher),
+    principal: Principal = Depends(require_staff),
     db: Session = Depends(get_db),
 ) -> dict:
     exam_service.submit_exam(db, principal.user, exam_id, principal.ip)
@@ -187,7 +233,7 @@ def submit_exam(
 def generate_paper(
     exam_id: str,
     background: BackgroundTasks,
-    principal: Principal = Depends(require_teacher),
+    principal: Principal = Depends(require_staff),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     request = exam_service.queue_generation(db, principal.user, exam_id, principal.ip)

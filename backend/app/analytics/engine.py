@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from statistics import mean
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.timeutils import ensure_utc
@@ -21,7 +21,9 @@ from app.models.tables import (
     PracticeResult,
     PracticeTest,
     SecurityEvent,
+    StudentSubject,
     Subject,
+    SubjectTeacher,
     Topic,
     User,
 )
@@ -117,14 +119,21 @@ def difficulty_performance(db: Session, student_id: str) -> list[dict[str, Any]]
     ]
 
 
+def _enrolled_subject_ids(db: Session, student_id: str) -> set[str]:
+    return set(
+        db.execute(select(StudentSubject.subject_id).where(StudentSubject.student_id == student_id)).scalars()
+    )
+
+
 def recommendations_for(db: Session, student_id: str, weak_topics: list[dict]) -> list[dict[str, Any]]:
     recommendations: list[dict[str, Any]] = []
+    enrolled = _enrolled_subject_ids(db, student_id)
     for topic in weak_topics[:3]:
         suggested = db.execute(
             select(PracticeTest)
-            .join(PracticeTest.topics)
             .where(
                 PracticeTest.status == PracticeTestStatus.PUBLISHED,
+                PracticeTest.subject_id.in_(enrolled),
                 PracticeTest.topics.any(topic_id=topic["topic_id"]),
             )
             .order_by(PracticeTest.created_at.desc())
@@ -264,15 +273,23 @@ def teacher_test_analytics(db: Session, test: PracticeTest) -> dict[str, Any]:
             bucket = topic_buckets.setdefault(name, {"topic_name": name, "attempted": 0, "correct": 0})
             bucket["attempted"] += int(row.get("attempted", 0))
             bucket["correct"] += int(row.get("correct", 0))
-        student = db.get(User, result.student_id)
-        student_rows[result.student_id] = {
-            "student_id": result.student_id,
-            "student_name": student.full_name if student else "Unknown",
-            "student_email": student.email if student else "",
-            "attempts": 1,
-            "best_percentage": round(result.percentage, 2),
-            "last_attempt": result.created_at,
-        }
+        row = student_rows.get(result.student_id)
+        if row is None:
+            student = db.get(User, result.student_id)
+            row = student_rows[result.student_id] = {
+                "student_id": result.student_id,
+                "student_name": student.full_name if student else "Unknown",
+                "student_email": student.email if student else "",
+                "attempts": 0,
+                "best_percentage": 0.0,
+                "last_attempt": result.created_at,
+                "last_attempt_id": result.attempt_id,
+            }
+        row["attempts"] += 1
+        row["best_percentage"] = max(row["best_percentage"], round(result.percentage, 2))
+        if result.created_at >= row["last_attempt"]:
+            row["last_attempt"] = result.created_at
+            row["last_attempt_id"] = result.attempt_id
     for name, bucket in topic_buckets.items():
         bucket["accuracy"] = _pct(bucket["correct"], bucket["attempted"])
     return {
@@ -289,9 +306,12 @@ def teacher_test_analytics(db: Session, test: PracticeTest) -> dict[str, Any]:
 
 def student_dashboard(db: Session, student: User) -> dict[str, Any]:
     analytics = student_analytics(db, student.id)
+    enrolled = _enrolled_subject_ids(db, student.id)
     published = (
         db.execute(
-            select(PracticeTest).where(PracticeTest.status == PracticeTestStatus.PUBLISHED)
+            select(PracticeTest).where(
+                PracticeTest.status == PracticeTestStatus.PUBLISHED, PracticeTest.subject_id.in_(enrolled)
+            )
         ).scalars().all()
     )
     attempted = set(
@@ -299,6 +319,7 @@ def student_dashboard(db: Session, student: User) -> dict[str, Any]:
     )
     recent = attempt_history(db, student.id)[:5]
     return {
+        "enrolled_subjects": len(enrolled),
         "tests_available": len([test for test in published if test.id not in attempted]),
         "tests_attempted": len(attempted),
         "summary": {
@@ -431,4 +452,67 @@ def hod_dashboard(db: Session, hod: User) -> dict[str, Any]:
             }
             for exam in upcoming[:6]
         ],
+        "department": department_overview(db),
+    }
+
+
+def department_overview(db: Session) -> dict[str, Any]:
+    """Per-subject and per-teacher rollups of the practice module for the HOD."""
+    subjects = db.execute(select(Subject).order_by(Subject.name)).scalars().all()
+    tests = db.execute(select(PracticeTest)).scalars().all()
+    results = db.execute(select(PracticeResult)).scalars().all()
+    exams = db.execute(select(InternalExam)).scalars().all()
+    enrolments = db.execute(select(StudentSubject.subject_id, StudentSubject.student_id)).all()
+    assignments = db.execute(select(SubjectTeacher.subject_id, SubjectTeacher.teacher_id)).all()
+    test_subject = {test.id: test.subject_id for test in tests}
+
+    subject_rows = []
+    for subject in subjects:
+        subject_results = [r for r in results if test_subject.get(r.test_id) == subject.id]
+        subject_rows.append(
+            {
+                "subject_id": subject.id,
+                "code": subject.code,
+                "name": subject.name,
+                "teachers": len({t for s_id, t in assignments if s_id == subject.id}),
+                "students": len({st for s_id, st in enrolments if s_id == subject.id}),
+                "published_tests": len(
+                    [t for t in tests if t.subject_id == subject.id and t.status == PracticeTestStatus.PUBLISHED]
+                ),
+                "attempts": len(subject_results),
+                "active_students": len({r.student_id for r in subject_results}),
+                "average_percentage": round(mean([r.percentage for r in subject_results]), 2)
+                if subject_results
+                else 0.0,
+                "exams": len([e for e in exams if e.subject_id == subject.id]),
+            }
+        )
+
+    teachers = db.execute(select(User).where(User.role == Role.TEACHER).order_by(User.full_name)).scalars().all()
+    teacher_rows = []
+    for teacher in teachers:
+        own_tests = [t for t in tests if t.created_by == teacher.id]
+        own_ids = {t.id for t in own_tests}
+        own_results = [r for r in results if r.test_id in own_ids]
+        teacher_rows.append(
+            {
+                "teacher_id": teacher.id,
+                "name": teacher.full_name,
+                "subjects": len({s_id for s_id, t in assignments if t == teacher.id}),
+                "practice_tests": len(own_tests),
+                "published_tests": len([t for t in own_tests if t.status == PracticeTestStatus.PUBLISHED]),
+                "attempts": len(own_results),
+                "average_percentage": round(mean([r.percentage for r in own_results]), 2) if own_results else 0.0,
+                "exams": len([e for e in exams if e.created_by == teacher.id]),
+            }
+        )
+    students = int(
+        db.execute(select(func.count(User.id)).where(User.role == Role.STUDENT, User.is_active.is_(True))).scalar_one()
+    )
+    return {
+        "students": students,
+        "practice_attempts": len(results),
+        "average_percentage": round(mean([r.percentage for r in results]), 2) if results else 0.0,
+        "subjects": subject_rows,
+        "teachers": teacher_rows,
     }
