@@ -7,7 +7,15 @@ export interface User {
   role: Role;
   department: string;
   mfa_enabled: boolean;
+  must_change_password?: boolean;
   last_login_at?: string | null;
+}
+
+export interface AdminUser extends User {
+  is_active: boolean;
+  must_change_password: boolean;
+  created_at?: string | null;
+  subject_ids: string[];
 }
 
 export interface DemoAccount {
@@ -59,7 +67,18 @@ export interface Subject {
   department: string;
   topics: Topic[];
   assigned_teachers: string[];
-  assigned_to_me?: boolean;
+  teacher_ids: string[];
+  student_count: number;
+  assigned_to_me: boolean;
+}
+
+export interface EnrolledStudent {
+  id: string;
+  email: string;
+  full_name: string;
+  department: string;
+  is_active: boolean;
+  enrolled_at: string;
 }
 
 export interface DemoCodeResponse {
@@ -75,6 +94,9 @@ export interface LoginResponse {
   method?: string;
   access_token?: string;
   user?: User;
+  enrollment_required?: boolean;
+  secret?: string | null;
+  otpauth_uri?: string | null;
 }
 
 export interface PracticeTest {
@@ -92,6 +114,8 @@ export interface PracticeTest {
   attempt_count: number;
   best_score: number | null;
   last_attempt_at: string | null;
+  can_edit: boolean;
+  created_by_name: string;
 }
 
 export interface QuestionOption {
@@ -147,6 +171,8 @@ export interface Attempt {
   server_time: string;
   total_marks: number;
   warning: string;
+  saved_answers: Record<string, { selected: string[]; response_time_seconds: number }>;
+  last_saved_at: string | null;
   questions: Question[];
 }
 
@@ -181,6 +207,8 @@ export interface PracticeResult {
   topic_breakdown: Array<Record<string, unknown>>;
   difficulty_breakdown: Array<Record<string, unknown>>;
   review: ReviewItem[];
+  auto_submitted?: boolean;
+  student_name?: string | null;
 }
 
 export interface TopicPerformance {
@@ -222,8 +250,19 @@ export interface HistoryItem {
   status: string;
 }
 
+export type ExamSource = "GENERATED" | "UPLOADED";
+
 export interface Exam {
   id: string;
+  source: ExamSource;
+  can_edit: boolean;
+  created_by_id: string;
+  paper_version: number | null;
+  paper_file_name: string;
+  paper_page_count: number;
+  replaceable_until: string | null;
+  window_opens_at: string | null;
+  window_closes_at: string | null;
   subject_id: string;
   subject_name: string;
   title: string;
@@ -285,6 +324,9 @@ export interface SecurePaper {
   key_id: string;
   ciphertext_sha256: string;
   ciphertext_bytes: number;
+  content_type: string;
+  original_name: string;
+  page_count: number;
   encrypted_at: string | null;
   locked_at: string | null;
   plaintext_hash_matches: boolean;
@@ -300,6 +342,11 @@ export interface SecurePaper {
 export interface ReleaseQueueItem {
   paper_id: string;
   exam_id: string;
+  source: ExamSource;
+  paper_version: number;
+  page_count: number;
+  prints_used: number;
+  prints_remaining: number;
   exam_title: string;
   subject_name: string;
   exam_type: string;
@@ -355,6 +402,8 @@ export interface SecurityEvent {
   ip_address: string;
   detail: Record<string, unknown>;
   created_at: string;
+  resolved?: boolean;
+  resolved_at?: string | null;
 }
 
 export interface SyllabusDocument {
@@ -417,9 +466,53 @@ export interface HodDashboard {
     status: string;
     total_marks: number;
   }>;
+  department: DepartmentOverview;
+}
+
+export interface DepartmentOverview {
+  students: number;
+  practice_attempts: number;
+  average_percentage: number;
+  subjects: Array<{
+    subject_id: string;
+    code: string;
+    name: string;
+    teachers: number;
+    students: number;
+    published_tests: number;
+    attempts: number;
+    active_students: number;
+    average_percentage: number;
+    exams: number;
+  }>;
+  teachers: Array<{
+    teacher_id: string;
+    name: string;
+    subjects: number;
+    practice_tests: number;
+    published_tests: number;
+    attempts: number;
+    average_percentage: number;
+    exams: number;
+  }>;
+}
+
+export interface ReleaseHistoryItem {
+  release_id: string;
+  paper_id: string;
+  exam_title: string;
+  subject_name: string;
+  status: string;
+  authorized_by_name: string;
+  authorized_at: string;
+  decrypted_at: string | null;
+  printed_at: string | null;
+  print_count: number;
+  reason: string;
 }
 
 export interface StudentDashboard {
+  enrolled_subjects: number;
   tests_available: number;
   tests_attempted: number;
   summary: {

@@ -13,7 +13,7 @@ import {
 import { useAuth } from "../context/AuthContext";
 import { api, errorMessage } from "../lib/api";
 import { initials, titleCase } from "../lib/format";
-import type { DemoAccount, DemoCodeResponse } from "../lib/types";
+import type { DemoAccount, DemoCodeResponse, LoginResponse } from "../lib/types";
 import { Button, Field, Input } from "../components/ui";
 import { useToast } from "../context/ToastContext";
 
@@ -23,11 +23,12 @@ export function Login() {
   const { user, meta, login, verifyMfa } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [email, setEmail] = useState("teacher@praxis.demo");
-  const [password, setPassword] = useState("Praxis@2026#Demo");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [challenge, setChallenge] = useState<string | null>(null);
+  const [enrollment, setEnrollment] = useState<Pick<LoginResponse, "secret" | "otpauth_uri"> | null>(null);
   const [code, setCode] = useState("");
   const [demoCode, setDemoCode] = useState<DemoCodeResponse | null>(null);
 
@@ -50,7 +51,14 @@ export function Login() {
       if (result.mfa_required && result.mfa_token) {
         setChallenge(result.mfa_token);
         setCode("");
-        toast("Enter the 6-digit authenticator code to continue.", "info");
+        setDemoCode(null);
+        if (result.enrollment_required) {
+          setEnrollment({ secret: result.secret, otpauth_uri: result.otpauth_uri });
+          toast("Set up your authenticator app to finish signing in.", "info");
+        } else {
+          setEnrollment(null);
+          toast("Enter the 6-digit authenticator code to continue.", "info");
+        }
       } else if (result.user) {
         navigate(HOME_BY_ROLE[result.user.role], { replace: true });
       }
@@ -85,7 +93,7 @@ export function Login() {
     setBusy(true);
     setError(null);
     try {
-      const verified = await verifyMfa(challenge, code);
+      const verified = await verifyMfa(challenge, code, Boolean(enrollment));
       navigate(HOME_BY_ROLE[verified.role], { replace: true });
     } catch (err) {
       setError(errorMessage(err));
@@ -150,11 +158,13 @@ export function Login() {
             <div className="login-kicker">
               <KeyRound size={15} /> Secure sign in
             </div>
-            <h2>{challenge ? "Verify your identity" : "Welcome back"}</h2>
+            <h2>{enrollment ? "Set up your authenticator" : challenge ? "Verify your identity" : "Welcome back"}</h2>
             <p>
-              {challenge
-                ? "Praxis requires a time-based one-time code for HOD accounts."
-                : "Use your department account. Sessions are cookie-based and CSRF protected."}
+              {enrollment
+                ? "HOD accounts are protected by a one-time code. Add Praxis to an authenticator app (Google Authenticator, Microsoft Authenticator, Authy) to finish your first sign-in."
+                : challenge
+                  ? "Praxis requires a time-based one-time code for this account."
+                  : "Use your department account. Sessions are cookie-based and CSRF protected."}
             </p>
           </div>
 
@@ -163,10 +173,21 @@ export function Login() {
               <div className="mfa-banner">
                 <ShieldCheck size={18} />
                 <div>
-                  <strong>Authenticator code required</strong>
+                  <strong>{enrollment ? "New authenticator" : "Authenticator code required"}</strong>
                   <span>{email}</span>
                 </div>
               </div>
+              {enrollment?.secret && (
+                <div className="enroll-secret">
+                  <span className="field-label">Setup key (choose "enter a setup key" in your app)</span>
+                  <code>{enrollment.secret.replace(/(.{4})/g, "$1 ").trim()}</code>
+                  {enrollment.otpauth_uri && (
+                    <a className="text-link" href={enrollment.otpauth_uri}>
+                      Open in an authenticator on this device
+                    </a>
+                  )}
+                </div>
+              )}
               <Field label="6-digit code" hint={demoCode?.warning}>
                 <Input
                   inputMode="numeric"
@@ -181,17 +202,20 @@ export function Login() {
               </Field>
               {error && <div className="form-error">{error}</div>}
               <Button type="submit" loading={busy} disabled={code.length !== 6} icon={<ArrowRight size={16} />}>
-                Verify and enter
+                {enrollment ? "Confirm and enter" : "Verify and enter"}
               </Button>
               <div className="login-secondary-actions">
-                <Button type="button" variant="soft" size="sm" onClick={fetchDemoCode} loading={busy}>
-                  Use demo authenticator code
-                </Button>
+                {meta?.demo_mode && !enrollment && (
+                  <Button type="button" variant="soft" size="sm" onClick={fetchDemoCode} loading={busy}>
+                    Use demo authenticator code
+                  </Button>
+                )}
                 <button
                   type="button"
                   className="text-link"
                   onClick={() => {
                     setChallenge(null);
+                    setEnrollment(null);
                     setError(null);
                     setCode("");
                   }}
@@ -208,7 +232,7 @@ export function Login() {
                   autoComplete="username"
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
-                  placeholder="name@praxis.demo"
+                  placeholder="name@college.edu"
                   required
                 />
               </Field>

@@ -12,7 +12,7 @@ import {
 import { useAuth } from "../../context/AuthContext";
 import { useApi } from "../../lib/useApi";
 import type { TeacherDashboard as TeacherDashboardData } from "../../lib/types";
-import { formatDate, statusTone, titleCase } from "../../lib/format";
+import { formatDate, statusTone, titleCase, firstName as firstNameOf } from "../../lib/format";
 import { Badge, Button, Card, ErrorState, PageHeader, PageLoading, Stat } from "../../components/ui";
 
 export function TeacherDashboard() {
@@ -23,7 +23,7 @@ export function TeacherDashboard() {
   if (dashboard.error) return <ErrorState message={dashboard.error} onRetry={dashboard.reload} />;
   if (!dashboard.data) return null;
   const data = dashboard.data;
-  const firstName = user?.full_name.split(" ")[1] ?? user?.full_name.split(" ")[0] ?? "Professor";
+  const firstName = firstNameOf(user?.full_name, "Professor");
 
   return (
     <div className="stack">

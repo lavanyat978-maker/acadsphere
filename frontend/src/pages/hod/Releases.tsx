@@ -69,13 +69,18 @@ export function Releases() {
     if (!selected || !token) return;
     setBusy("decrypt");
     try {
-      const result = await api<{ integrity_verified: boolean; question_count: number; sections: Array<{ label: string }> }>(
+      const result = await api<{ integrity_verified: boolean; question_count: number; page_count: number; sections: Array<{ label: string }> }>(
         `/exams/release/${selected.paper_id}/decrypt`,
         { method: "POST", body: { release_token: token.token, reason } },
       );
       if (!result.integrity_verified) throw new Error("Integrity verification failed.");
       setDecrypted(true);
-      toast(`Integrity verified for ${result.question_count} questions.`, "success");
+      toast(
+        result.page_count
+          ? `Integrity verified for the ${result.page_count}-page uploaded paper.`
+          : `Integrity verified for ${result.question_count} questions.`,
+        "success",
+      );
     } catch (err) {
       toast(errorMessage(err), "error");
     } finally {
@@ -136,7 +141,7 @@ export function Releases() {
         <div className="release-list">
           {items.map((item) => {
             const released = item.paper_state === "RELEASED" || item.release?.status === "RELEASED";
-            const printCount = item.release?.print_count ?? 0;
+            const printCount = item.prints_used;
             return (
               <Card className={`release-card ${released ? "released" : ""}`} key={item.paper_id} as="article">
                 <div className="release-main">
@@ -147,7 +152,10 @@ export function Releases() {
                     </div>
                     <div>
                       <h3>{item.exam_title}</h3>
-                      <p>{item.subject_name} · {item.exam_type} · {item.total_marks} marks · {item.venue}</p>
+                      <p>
+                        {item.subject_name} · {item.exam_type} · {item.total_marks} marks · {item.venue} ·{" "}
+                        {item.source === "UPLOADED" ? `uploaded PDF, ${item.page_count} page(s)` : "AI-generated"} · v{item.paper_version}
+                      </p>
                     </div>
                     <div className="release-badges">
                       <Badge tone={statusTone(item.paper_state)}>{titleCase(item.paper_state)}</Badge>
@@ -159,7 +167,7 @@ export function Releases() {
                   <div className="release-meta">
                     <span><Clock3 size={14} /> Exam {formatDateTime(item.exam_date)} ({relativeTime(item.exam_date)})</span>
                     <span><ShieldCheck size={14} /> Window closes {formatDateTime(item.window_closes_at)}</span>
-                    <span><Printer size={14} /> {printCount} / 3 prints</span>
+                    <span><Printer size={14} /> {printCount} / 3 prints (per paper, across all authorisations)</span>
                     {item.release && <span><KeyRound size={14} /> Authorized by {item.release.authorized_by_name}</span>}
                   </div>
                   {item.release && (
@@ -216,7 +224,7 @@ export function Releases() {
               </Button>
             )}
             {token && decrypted && (
-              <Button loading={busy === "print"} onClick={print} icon={<Download size={15} />}>
+              <Button loading={busy === "print"} onClick={print} icon={<Download size={15} />} disabled={(selected?.prints_remaining ?? 0) <= 0}>
                 Generate printable PDF
               </Button>
             )}
@@ -259,9 +267,13 @@ export function Releases() {
             <span className="ceremony-number">3</span>
             <div>
               <strong>Controlled print</strong>
-              <p>The PDF is generated in memory. Each download increments the server-side print counter (max 3).</p>
-              {selected?.release && (
-                <span className="muted">{selected.release.print_count} of 3 prints used</span>
+              <p>
+                {selected?.source === "UPLOADED"
+                  ? "The teacher's PDF is decrypted in memory and every page is stamped with the copy number. Maximum three copies per paper."
+                  : "The PDF is rendered in memory. Maximum three copies per paper; re-authorising does not reset the count."}
+              </p>
+              {selected && (
+                <span className="muted">{selected.prints_used} of 3 prints used · {selected.prints_remaining} remaining</span>
               )}
             </div>
           </div>

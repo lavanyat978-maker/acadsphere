@@ -35,3 +35,4 @@ npm-debug.log*
 .idea/
 # .vscode/ is committed on purpose: launch/tasks configs make the project
 # runnable from VS Code after a clone. Keep personal edits out of it.
+frontend/vite.pid

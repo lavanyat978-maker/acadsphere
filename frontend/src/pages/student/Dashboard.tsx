@@ -12,7 +12,7 @@ import {
 import { useAuth } from "../../context/AuthContext";
 import { useApi } from "../../lib/useApi";
 import type { PracticeTest, StudentDashboard } from "../../lib/types";
-import { formatDateTime, relativeTime, scoreTone } from "../../lib/format";
+import { formatDateTime, relativeTime, scoreTone, firstName as firstNameOf } from "../../lib/format";
 import { Badge, Button, Card, EmptyState, ErrorState, PageLoading, PageHeader, Progress, Stat } from "../../components/ui";
 import { ScoreRing, TrendChart, TopicBars } from "../../components/charts";
 
@@ -28,7 +28,7 @@ export function StudentDashboard() {
   const data = dashboard.data;
   const summary = data.summary;
   const recommended = (tests.data ?? []).filter((test) => test.attempt_count === 0).slice(0, 3);
-  const firstName = user?.full_name.split(" ")[0] ?? "there";
+  const firstName = firstNameOf(user?.full_name, "there");
 
   return (
     <div className="stack">
@@ -64,6 +64,12 @@ export function StudentDashboard() {
           </div>
           <ScoreRing percentage={summary.average_percentage} label="average" />
         </Card>
+
+        {data.enrolled_subjects === 0 && (
+          <div className="notice notice-warning">
+            You are not enrolled in any subject yet, so no practice tests are available. Ask the Head of Department to enrol you.
+          </div>
+        )}
 
         <div className="stat-grid stat-grid-tight">
           <Stat

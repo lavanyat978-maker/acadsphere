@@ -13,7 +13,7 @@ import { useAuth } from "../../context/AuthContext";
 import { useApi } from "../../lib/useApi";
 import type { HodDashboard as HodDashboardData } from "../../lib/types";
 import { Badge, Button, Card, ErrorState, PageHeader, PageLoading, Stat } from "../../components/ui";
-import { formatDateTime, relativeTime, statusTone, titleCase } from "../../lib/format";
+import { formatDateTime, relativeTime, scoreTone, statusTone, titleCase, firstName as firstNameOf } from "../../lib/format";
 
 export function HodDashboard() {
   const { user } = useAuth();
@@ -28,7 +28,7 @@ export function HodDashboard() {
     <div className="stack">
       <PageHeader
         eyebrow="Department control"
-        title={`Command centre${user ? ` · ${user.full_name.split(" ")[0]}` : ""}`}
+        title={`Command centre${user ? ` · ${firstNameOf(user.full_name)}` : ""}`}
         description="Sealed paper inventory, release windows and the security posture of the assessment cycle."
         actions={
           <Link to="/hod/releases">
@@ -135,6 +135,65 @@ export function HodDashboard() {
           </ol>
         </Card>
       </div>
+
+      {data.department && (
+        <>
+          <div className="card-head compact">
+            <div>
+              <div className="eyebrow">Department analytics · practice module</div>
+              <h3>
+                {data.department.students} active students · {data.department.practice_attempts} attempts ·{" "}
+                {data.department.average_percentage.toFixed(1)}% average
+              </h3>
+            </div>
+            <Link to="/hod/subjects" className="text-link">Manage subjects <ArrowRight size={14} /></Link>
+          </div>
+          <div className="split-grid">
+            <div className="table-card">
+              <div className="table-wrap">
+                <table className="data-table data-table-compact">
+                  <thead>
+                    <tr><th>Subject</th><th>Staff</th><th>Students</th><th>Tests</th><th>Attempts</th><th>Average</th></tr>
+                  </thead>
+                  <tbody>
+                    {data.department.subjects.map((row) => (
+                      <tr key={row.subject_id}>
+                        <td className="table-primary"><strong>{row.code}</strong><span>{row.name}</span></td>
+                        <td>{row.teachers}</td>
+                        <td>{row.active_students}/{row.students}</td>
+                        <td>{row.published_tests}</td>
+                        <td>{row.attempts}</td>
+                        <td>{row.attempts ? <Badge tone={scoreTone(row.average_percentage)}>{row.average_percentage.toFixed(1)}%</Badge> : <span className="muted">—</span>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="table-card">
+              <div className="table-wrap">
+                <table className="data-table data-table-compact">
+                  <thead>
+                    <tr><th>Teacher</th><th>Subjects</th><th>Tests</th><th>Attempts</th><th>Average</th><th>Exams</th></tr>
+                  </thead>
+                  <tbody>
+                    {data.department.teachers.map((row) => (
+                      <tr key={row.teacher_id}>
+                        <td className="table-primary"><strong>{row.name}</strong></td>
+                        <td>{row.subjects}</td>
+                        <td>{row.published_tests}/{row.practice_tests}</td>
+                        <td>{row.attempts}</td>
+                        <td>{row.attempts ? <Badge tone={scoreTone(row.average_percentage)}>{row.average_percentage.toFixed(1)}%</Badge> : <span className="muted">—</span>}</td>
+                        <td>{row.exams}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
 import { AlertTriangle, ShieldAlert, ShieldCheck, ShieldQuestion } from "lucide-react";
+import { api, errorMessage } from "../../lib/api";
 import { useApi } from "../../lib/useApi";
 import type { SecurityEvent } from "../../lib/types";
-import { Badge, Card, EmptyState, ErrorState, PageHeader, PageLoading, Select, Stat } from "../../components/ui";
+import { Badge, Button, Card, EmptyState, ErrorState, PageHeader, PageLoading, Select, Stat } from "../../components/ui";
+import { useToast } from "../../context/ToastContext";
 import { formatDateTime, relativeTime, titleCase } from "../../lib/format";
 
 const ICONS: Record<string, typeof ShieldAlert> = {
@@ -14,6 +16,20 @@ const ICONS: Record<string, typeof ShieldAlert> = {
 export function Security() {
   const events = useApi<SecurityEvent[]>("/audit/security-events?limit=100");
   const [severity, setSeverity] = useState("ALL");
+  const [resolving, setResolving] = useState<string | null>(null);
+  const { toast } = useToast();
+
+  const resolve = async (id: string) => {
+    setResolving(id);
+    try {
+      await api(`/audit/security-events/${id}/resolve`, { method: "POST" });
+      events.reload();
+    } catch (err) {
+      toast(errorMessage(err), "error");
+    } finally {
+      setResolving(null);
+    }
+  };
 
   const filtered = useMemo(
     () => (events.data ?? []).filter((event) => severity === "ALL" || event.severity === severity),
@@ -63,6 +79,13 @@ export function Security() {
                     <Badge tone={event.severity === "CRITICAL" ? "danger" : event.severity === "WARNING" ? "warning" : "success"}>
                       {event.severity}
                     </Badge>
+                    {event.resolved ? (
+                      <Badge tone="neutral">Resolved</Badge>
+                    ) : event.severity !== "INFO" ? (
+                      <Button size="sm" variant="ghost" loading={resolving === event.id} onClick={() => resolve(event.id)}>
+                        Mark resolved
+                      </Button>
+                    ) : null}
                   </div>
                   <p>{event.summary}</p>
                   <div className="security-event-meta">

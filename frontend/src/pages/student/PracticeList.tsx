@@ -112,7 +112,7 @@ export function PracticeList() {
           <EmptyState
             icon={<BookOpenCheck size={22} />}
             title="No practice tests match"
-            description="Try clearing the filters. Faculty publish new sets as the syllabus progresses."
+            description="Try clearing the filters. You only see tests for subjects you are enrolled in; if a subject is missing, ask the Head of Department to enrol you."
           />
         </Card>
       )}
