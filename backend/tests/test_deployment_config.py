@@ -114,3 +114,75 @@ def test_upload_extensions_accept_a_plain_environment_value(monkeypatch):
 
     monkeypatch.setenv("ALLOWED_UPLOAD_EXTENSIONS", "PDF, txt")
     assert Settings().ALLOWED_UPLOAD_EXTENSIONS == ["pdf", "txt"]
+
+
+class _FakeResponse:
+    def __init__(self, status: int, body=None, headers=None):
+        self.status_code = status
+        self._body = body if body is not None else {}
+        self.headers = headers or {}
+        self.text = str(self._body)
+
+    def json(self):
+        return self._body
+
+
+def _provider_with_responses(monkeypatch, responses):
+    from app.ai import provider as provider_module
+
+    calls = []
+    queue = list(responses)
+
+    class _Client:
+        def __init__(self, *a, **k): ...
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+
+        def post(self, url, headers=None, json=None):
+            calls.append(json)
+            item = queue.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+    monkeypatch.setattr(provider_module.httpx, "Client", _Client)
+    monkeypatch.setattr(provider_module.time, "sleep", lambda s: None)
+    monkeypatch.setattr(settings, "LLM_API_KEY", "test-key")
+    return provider_module.OpenAIProvider(), calls
+
+
+def _ok(text="{}"):
+    return _FakeResponse(200, {"choices": [{"message": {"content": text}}]})
+
+
+def test_llm_retries_rate_limits_then_succeeds(monkeypatch):
+    llm, calls = _provider_with_responses(monkeypatch, [_FakeResponse(429), _FakeResponse(503), _ok('{"a": 1}')])
+    assert llm._chat("s", "u") == '{"a": 1}'
+    assert len(calls) == 3
+
+
+def test_llm_gives_a_readable_502_when_the_provider_keeps_failing(monkeypatch):
+    import httpx
+
+    from app.ai.provider import LLMError
+
+    llm, calls = _provider_with_responses(
+        monkeypatch, [httpx.ReadTimeout("slow")] * 4
+    )
+    with pytest.raises(LLMError) as raised:
+        llm._chat("s", "u")
+    assert raised.value.status_code == 502 and raised.value.code == "AI_PROVIDER_ERROR"
+    assert "timed out" in raised.value.message
+    assert len(calls) == 4
+
+
+def test_llm_does_not_retry_a_rejected_request_and_reports_why(monkeypatch):
+    from app.ai.provider import LLMError
+
+    body = [{"error": {"message": "API key not valid. Please pass a valid API key."}}]
+    llm, calls = _provider_with_responses(monkeypatch, [_FakeResponse(400, body)])
+    with pytest.raises(LLMError) as raised:
+        llm._chat("s", "u")
+    assert "HTTP 400" in raised.value.message and "API key not valid" in raised.value.message
+    assert len(calls) == 1
+    assert "test-key" not in raised.value.message

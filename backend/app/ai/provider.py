@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import random
 import re
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
@@ -24,10 +25,14 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
+from app.core.errors import AppError
 
 
-class LLMError(RuntimeError):
-    pass
+class LLMError(AppError):
+    """The AI provider failed. A 502 with a readable message, not an opaque 500."""
+
+    def __init__(self, message: str, code: str = "AI_PROVIDER_ERROR") -> None:
+        super().__init__(code, message, 502)
 
 
 @dataclass
@@ -96,6 +101,8 @@ def extract_json(text: str) -> Any:
 class OpenAIProvider(LLMProvider):
     name = "openai-compatible"
     mode = "REAL_AI"
+    # Seconds to wait before each retry of a timed-out, rate-limited or failing call.
+    RETRY_DELAYS = (3, 9, 20)
 
     def __init__(self) -> None:
         if not settings.LLM_API_KEY:
@@ -116,8 +123,9 @@ class OpenAIProvider(LLMProvider):
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
-        last_error: Exception | None = None
-        for attempt in range(3):
+        last_error = "no response"
+        for attempt, delay in enumerate((*self.RETRY_DELAYS, None)):
+            wait = delay
             try:
                 with httpx.Client(timeout=settings.LLM_TIMEOUT_SECONDS) as client:
                     response = client.post(
@@ -128,14 +136,39 @@ class OpenAIProvider(LLMProvider):
                         },
                         json=payload,
                     )
-                    if response.status_code >= 500 or response.status_code == 429:
-                        raise LLMError(f"Provider returned {response.status_code}")
-                    response.raise_for_status()
-                    return response.json()["choices"][0]["message"]["content"]
-            except Exception as exc:  # noqa: BLE001
-                last_error = exc
-                continue
-        raise LLMError(f"LLM request failed after retries: {last_error}")
+            except httpx.TimeoutException:
+                last_error = f"timed out after {settings.LLM_TIMEOUT_SECONDS}s"
+            except httpx.HTTPError as exc:
+                last_error = f"network error ({type(exc).__name__})"
+            else:
+                status = response.status_code
+                if status == 429 or status >= 500:
+                    last_error = f"HTTP {status}" + (" (rate limited)" if status == 429 else "")
+                    retry_after = response.headers.get("Retry-After", "")
+                    if retry_after.isdigit() and delay is not None:
+                        wait = min(int(retry_after), 30)
+                elif status >= 400:
+                    # A rejected request (bad key, unknown model) will not improve on retry.
+                    raise LLMError(f"The AI provider rejected the request (HTTP {status}): {self._error_text(response)}")
+                else:
+                    try:
+                        return response.json()["choices"][0]["message"]["content"]
+                    except (ValueError, KeyError, IndexError, TypeError) as exc:
+                        raise LLMError("The AI provider returned a response in an unexpected format.") from exc
+            if wait is not None:
+                time.sleep(wait)
+        raise LLMError(f"The AI provider did not answer successfully ({last_error}). Try again in a minute.")
+
+    @staticmethod
+    def _error_text(response: "httpx.Response") -> str:
+        try:
+            body = response.json()
+            if isinstance(body, list) and body:
+                body = body[0]
+            message = body.get("error", {}).get("message") if isinstance(body, dict) else None
+        except ValueError:
+            message = None
+        return str(message or response.text or "no detail")[:240]
 
     def generate_questions(
         self, *, spec: dict[str, Any], context: list[dict[str, Any]]
