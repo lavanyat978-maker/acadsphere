@@ -149,12 +149,25 @@ def totp_uri(secret: str, email: str) -> str:
     return pyotp.TOTP(secret).provisioning_uri(name=email, issuer_name="Praxis Exams")
 
 
-def verify_totp(secret: str, code: str) -> bool:
+def totp_step(secret: str, code: str) -> int | None:
+    """The 30 s time-step a code belongs to, or None if it is not currently valid.
+
+    One step of clock drift is tolerated either side. Callers record the
+    returned step so the same code can never be accepted twice.
+    """
     code = (code or "").strip().replace(" ", "")
     if not code.isdigit() or len(code) != 6:
-        return False
-    # valid_window=1 tolerates one 30s step of clock drift.
-    return pyotp.TOTP(secret).verify(code, valid_window=1)
+        return None
+    totp = pyotp.TOTP(secret)
+    now = int(utcnow().timestamp()) // totp.interval
+    for step in (now - 1, now, now + 1):
+        if hmac.compare_digest(totp.generate_otp(step), code):
+            return step
+    return None
+
+
+def verify_totp(secret: str, code: str) -> bool:
+    return totp_step(secret, code) is not None
 
 
 def current_totp(secret: str) -> str:

@@ -176,6 +176,7 @@ def reset_mfa(db: Session, actor: User, user_id: str, ip: str = "") -> User:
         raise Forbidden("Another HOD must reset your authenticator.", code="SELF_RESET")
     user.mfa_enabled = False
     user.mfa_secret_enc = None
+    user.mfa_last_step = None
     user.token_version += 1
     record_audit(db, event="USER_MFA_RESET", actor=actor, resource_type="user", resource_id=user.id, ip=ip)
     record_security_event(
@@ -199,3 +200,104 @@ def unlock(db: Session, actor: User, user_id: str, ip: str = "") -> User:
     record_audit(db, event="USER_UNLOCKED", actor=actor, resource_type="user", resource_id=user.id, ip=ip)
     db.flush()
     return user
+
+
+IMPORT_MAX_ROWS = 500
+IMPORT_COLUMNS = ("email", "full_name", "role", "department", "subjects")
+
+
+def import_users_csv(db: Session, actor: User, data: bytes, ip: str = "") -> list[dict[str, Any]]:
+    """Create accounts from a CSV file. All rows are validated before any is created.
+
+    Columns: email, full_name (required); role (STUDENT/TEACHER/HOD, default
+    STUDENT), department, subjects (subject codes separated by ";").
+    Returns one row per created account with its one-time password.
+    """
+    import csv
+    import io
+
+    from email_validator import EmailNotValidError, validate_email
+
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise AppError("CSV_ENCODING", "Save the file as UTF-8 CSV.", 400) from exc
+    reader = csv.DictReader(io.StringIO(text))
+    headers = [(name or "").strip().lower() for name in (reader.fieldnames or [])]
+    if "email" not in headers or "full_name" not in headers:
+        raise AppError("CSV_HEADERS", "The first row must contain at least the columns email and full_name.", 400)
+    reader.fieldnames = headers
+
+    subjects_by_code = {subject.code.upper(): subject.id for subject in db.execute(select(Subject)).scalars()}
+    existing = {email for email in db.execute(select(User.email)).scalars()}
+    rows: list[UserCreate] = []
+    errors: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for line, raw in enumerate(reader, start=2):
+        record = {key: (value or "").strip() for key, value in raw.items() if key in IMPORT_COLUMNS}
+        if not any(record.values()):
+            continue
+        if len(rows) + len(errors) >= IMPORT_MAX_ROWS:
+            raise AppError("CSV_TOO_LARGE", f"Import at most {IMPORT_MAX_ROWS} rows per file.", 400)
+        email = record.get("email", "").lower()
+        try:
+            email = validate_email(email, check_deliverability=False).normalized.lower()
+        except EmailNotValidError:
+            errors.append({"row": line, "error": f"Invalid email '{record.get('email', '')}'"})
+            continue
+        if email in existing or email in seen:
+            errors.append({"row": line, "error": f"{email} already exists"})
+            continue
+        role = (record.get("role") or "STUDENT").upper()
+        if role not in {item.value for item in Role}:
+            errors.append({"row": line, "error": f"Unknown role '{record.get('role')}'"})
+            continue
+        codes = [code.strip().upper() for code in (record.get("subjects") or "").replace("|", ";").split(";") if code.strip()]
+        unknown = [code for code in codes if code not in subjects_by_code]
+        if unknown:
+            errors.append({"row": line, "error": f"Unknown subject code(s): {', '.join(unknown)}"})
+            continue
+        if len(record.get("full_name", "")) < 2:
+            errors.append({"row": line, "error": "full_name is required"})
+            continue
+        seen.add(email)
+        rows.append(
+            UserCreate(
+                email=email,
+                full_name=record["full_name"],
+                role=Role(role),
+                department=record.get("department") or "Computer Science",
+                subject_ids=[subjects_by_code[code] for code in codes],
+            )
+        )
+    if errors:
+        raise AppError(
+            "CSV_INVALID",
+            f"{len(errors)} row(s) need fixing. Nothing was imported.",
+            422,
+            details=errors[:100],
+        )
+    if not rows:
+        raise AppError("CSV_EMPTY", "The file has no accounts to import.", 400)
+
+    created: list[dict[str, Any]] = []
+    for payload in rows:
+        user, temporary = create_user(db, payload, actor=actor, ip=ip)
+        created.append(
+            {
+                "email": user.email,
+                "full_name": user.full_name,
+                "role": user.role,
+                "temporary_password": temporary,
+            }
+        )
+    record_audit(
+        db,
+        event="USERS_IMPORTED",
+        actor=actor,
+        resource_type="user",
+        ip=ip,
+        metadata={"count": len(created)},
+    )
+    db.flush()
+    return created

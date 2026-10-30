@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
-import { Check, Copy, KeyRound, Lock, Plus, Search, ShieldOff, UserCheck, UserX } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { Check, Copy, Download, FileUp, KeyRound, Lock, Plus, Search, ShieldOff, UserCheck, UserX } from "lucide-react";
+import { ApiError } from "../../lib/api";
 import { useAuth } from "../../context/AuthContext";
 import { useToast } from "../../context/ToastContext";
 import { api, errorMessage, fieldErrors } from "../../lib/api";
@@ -20,6 +21,28 @@ import {
 } from "../../components/ui";
 
 type RoleFilter = "ALL" | Role;
+
+interface ImportedRow {
+  email: string;
+  full_name: string;
+  role: string;
+  temporary_password: string;
+}
+
+const CSV_TEMPLATE = "email,full_name,role,department,subjects\nstudent.one@college.edu,Student One,STUDENT,Computer Science,CS501;CS502\nteacher.one@college.edu,Teacher One,TEACHER,Computer Science,CS501\n";
+
+function downloadText(filename: string, text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: "text/csv" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+const csvCell = (value: string) => (/[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value);
 
 interface CreatedSecret {
   title: string;
@@ -69,6 +92,12 @@ export function People() {
   const [formSubjects, setFormSubjects] = useState<string[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // CSV import: all rows are validated server-side before any account is created.
+  const csvInput = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
+  const [imported, setImported] = useState<ImportedRow[] | null>(null);
+  const [importErrors, setImportErrors] = useState<Array<{ row: number; error: string }> | null>(null);
 
   const subjectName = useMemo(() => {
     const map = new Map<string, string>();
@@ -167,6 +196,38 @@ export function People() {
       toast("Lockout cleared.", "success");
     });
 
+  const importCsv = async (file: File | undefined) => {
+    if (!file) return;
+    setImporting(true);
+    setImportErrors(null);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const result = await api<{ created: ImportedRow[]; count: number }>("/users/import", { method: "POST", form });
+      setImported(result.created);
+      users.reload();
+      subjects.reload();
+      toast(`${result.count} account(s) created.`, "success");
+    } catch (err) {
+      if (err instanceof ApiError && Array.isArray(err.details)) {
+        setImportErrors(err.details as Array<{ row: number; error: string }>);
+      } else {
+        toast(errorMessage(err), "error");
+      }
+    } finally {
+      setImporting(false);
+      if (csvInput.current) csvInput.current.value = "";
+    }
+  };
+
+  const downloadCredentials = () => {
+    if (!imported) return;
+    const lines = ["email,full_name,role,temporary_password", ...imported.map((row) =>
+      [row.email, row.full_name, row.role, row.temporary_password].map(csvCell).join(","),
+    )];
+    downloadText("praxis-new-accounts.csv", lines.join("\n") + "\n");
+  };
+
   const toggleSubject = (id: string) =>
     setFormSubjects((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
 
@@ -177,11 +238,37 @@ export function People() {
         title="People"
         description="Create accounts, reset credentials and control access. Accounts start with a one-time password."
         actions={
-          <Button icon={<Plus size={15} />} onClick={openCreate}>
-            Add person
-          </Button>
+          <div className="page-actions-inline">
+            <input
+              ref={csvInput}
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden-input"
+              onChange={(event) => importCsv(event.target.files?.[0])}
+            />
+            <Button variant="ghost" size="sm" icon={<Download size={14} />} onClick={() => downloadText("praxis-import-template.csv", CSV_TEMPLATE)}>
+              CSV template
+            </Button>
+            <Button variant="secondary" icon={<FileUp size={15} />} loading={importing} onClick={() => csvInput.current?.click()}>
+              Import CSV
+            </Button>
+            <Button icon={<Plus size={15} />} onClick={openCreate}>
+              Add person
+            </Button>
+          </div>
         }
       />
+
+      {importErrors && (
+        <div className="form-error">
+          <strong>Nothing was imported. Fix these rows and upload the file again:</strong>
+          <ul className="error-list">
+            {importErrors.map((item) => (
+              <li key={`${item.row}-${item.error}`}>Row {item.row}: {item.error}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="toolbar-row">
         <div className="tabs">
@@ -366,6 +453,42 @@ export function People() {
           )}
           {formError && <div className="form-error span-2">{formError}</div>}
         </form>
+      </Modal>
+
+      <Modal
+        open={imported !== null}
+        onClose={() => setImported(null)}
+        title={`${imported?.length ?? 0} account(s) imported`}
+        description="Download the one-time passwords now; they are not shown again. Every user must set a new password at first sign-in."
+        width="720px"
+        footer={
+          <>
+            <Button variant="secondary" icon={<Download size={15} />} onClick={downloadCredentials}>
+              Download credentials CSV
+            </Button>
+            <Button icon={<Check size={15} />} onClick={() => setImported(null)}>
+              Done
+            </Button>
+          </>
+        }
+      >
+        <div className="table-wrap import-results">
+          <table className="data-table data-table-compact">
+            <thead>
+              <tr><th>Name</th><th>Email</th><th>Role</th><th>Temporary password</th></tr>
+            </thead>
+            <tbody>
+              {(imported ?? []).map((row) => (
+                <tr key={row.email}>
+                  <td>{row.full_name}</td>
+                  <td>{row.email}</td>
+                  <td>{titleCase(row.role)}</td>
+                  <td><code>{row.temporary_password}</code></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </Modal>
 
       <Modal

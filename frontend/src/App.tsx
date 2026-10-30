@@ -115,6 +115,7 @@ export default function App() {
               <Route path="/teacher/exams" element={<RequireRole role={STAFF}><Exams /></RequireRole>} />
               <Route path="/teacher/exams/new" element={<RequireRole role={STAFF}><ExamNew /></RequireRole>} />
               <Route path="/teacher/exams/:examId" element={<RequireRole role={STAFF}><ExamDetail /></RequireRole>} />
+              <Route path="/teacher/exams/:examId/edit" element={<RequireRole role={STAFF}><ExamNew /></RequireRole>} />
               <Route path="/teacher/syllabus" element={<RequireRole role={STAFF}><Syllabus /></RequireRole>} />
 
               <Route path="/hod" element={<RequireRole role="HOD"><HodDashboard /></RequireRole>} />

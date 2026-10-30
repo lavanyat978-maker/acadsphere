@@ -70,6 +70,8 @@ class User(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     mfa_secret_enc: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Last accepted TOTP time-step: a code is single use even inside its validity window.
+    mfa_last_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
     failed_login_count: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -21,7 +21,7 @@ from app.core.security import (
     totp_uri,
     utcnow,
     verify_password,
-    verify_totp,
+    totp_step,
 )
 from app.core.timeutils import ensure_utc
 from app.models.enums import Role, Severity
@@ -143,6 +143,7 @@ def login(db: Session, email: str, password: str, ip: str, ua: str) -> dict[str,
             if not secret:
                 secret = new_totp_secret()
                 user.mfa_secret_enc = seal_secret(secret)
+                user.mfa_last_step = None
             user.mfa_enabled = False
             user.failed_login_count = 0
             token, expires = create_token(
@@ -250,6 +251,17 @@ def _challenge_user(
     return user
 
 
+def _accept_code(user: User, code: str) -> bool:
+    """Check a TOTP code and consume its time-step. Replays of a used code fail."""
+    if not user.mfa_secret_enc:
+        return False
+    step = totp_step(open_secret(user.mfa_secret_enc), code)
+    if step is None or (user.mfa_last_step is not None and step <= user.mfa_last_step):
+        return False
+    user.mfa_last_step = step
+    return True
+
+
 def _reject_code(db: Session, user: User, ip: str, ua: str) -> None:
     _register_failure(db, user, ip, ua, "bad_totp")
     record_security_event(
@@ -294,7 +306,7 @@ def verify_mfa(db: Session, mfa_token: str, code: str, ip: str, ua: str) -> dict
     user = _challenge_user(db, mfa_token, "mfa_challenge", ip, ua)
     if not user.mfa_enabled:
         raise Unauthorized("MFA is not available for this account.")
-    if not verify_totp(open_secret(user.mfa_secret_enc), code):
+    if not _accept_code(user, code):
         _reject_code(db, user, ip, ua)
     return _issue_session(db, user, ip, ua, "LOGIN_MFA_SUCCESS")
 
@@ -304,7 +316,7 @@ def complete_enrollment_login(db: Session, mfa_token: str, code: str, ip: str, u
     user = _challenge_user(db, mfa_token, "mfa_enroll", ip, ua)
     if user.mfa_enabled:
         raise Conflict("MFA is already enrolled. Sign in again.", "MFA_ALREADY_ENABLED")
-    if not verify_totp(open_secret(user.mfa_secret_enc), code):
+    if not _accept_code(user, code):
         _reject_code(db, user, ip, ua)
     user.mfa_enabled = True
     user.token_version += 1
@@ -330,6 +342,7 @@ def begin_mfa_enrollment(db: Session, user: User, ip: str) -> dict[str, Any]:
     if not secret:
         secret = new_totp_secret()
         user.mfa_secret_enc = seal_secret(secret)
+        user.mfa_last_step = None
     user.mfa_enabled = False
     record_audit(db, event="MFA_ENROLLMENT_STARTED", actor=user, resource_type="auth", ip=ip)
     db.commit()
@@ -346,7 +359,7 @@ def confirm_mfa_enrollment(db: Session, user: User, code: str, ip: str) -> dict[
     if not user.mfa_secret_enc:
         raise AppError("MFA_NOT_STARTED", "Start enrollment before confirming.", 400)
     secret = open_secret(user.mfa_secret_enc)
-    if not verify_totp(secret, code):
+    if not _accept_code(user, code):
         raise AppError("MFA_INVALID_CODE", "That verification code is not valid.", 400)
     user.mfa_enabled = True
     user.token_version += 1
@@ -368,12 +381,13 @@ def disable_mfa(db: Session, user: User, code: str, ip: str) -> dict[str, Any]:
         raise Forbidden("MFA is mandatory for the HOD role and cannot be disabled.", code="MFA_MANDATORY")
     if not user.mfa_enabled or not user.mfa_secret_enc:
         raise Conflict("Multi-factor authentication is not active.", "MFA_NOT_ENABLED")
-    if not verify_totp(open_secret(user.mfa_secret_enc), code):
+    if not _accept_code(user, code):
         record_audit(db, event="MFA_DISABLE_FAILED", actor=user, resource_type="auth", success=False, ip=ip)
         db.commit()
         raise AppError("MFA_INVALID_CODE", "That verification code is not valid.", 400)
     user.mfa_enabled = False
     user.mfa_secret_enc = None
+    user.mfa_last_step = None
     user.token_version += 1
     record_audit(db, event="MFA_DISABLED", actor=user, resource_type="auth", ip=ip)
     record_security_event(
@@ -386,6 +400,26 @@ def disable_mfa(db: Session, user: User, code: str, ip: str) -> dict[str, Any]:
     )
     db.commit()
     return {"mfa_enabled": False, "message": "Multi-factor authentication disabled. Sign in again."}
+
+
+def _unused_demo_code(user: User) -> dict[str, Any]:
+    """Current code, or the next step's code when the current one was already used.
+
+    Codes are single use, so a reviewer signing in twice within 30 s would
+    otherwise be handed a code the server refuses. The next step is still
+    inside the accepted drift window.
+    """
+    import pyotp
+
+    totp = pyotp.TOTP(open_secret(user.mfa_secret_enc))
+    step = int(utcnow().timestamp()) // totp.interval
+    if user.mfa_last_step is not None and user.mfa_last_step >= step:
+        step = user.mfa_last_step + 1
+    return {
+        "code": totp.generate_otp(step),
+        "seconds_remaining": 30 - (int(utcnow().timestamp()) % 30),
+        "warning": "DEMO_MODE only. This bypass is not available in production.",
+    }
 
 
 def demo_code_for_challenge(db: Session, mfa_token: str, ip: str) -> dict[str, Any]:
@@ -408,15 +442,9 @@ def demo_code_for_challenge(db: Session, mfa_token: str, ip: str) -> dict[str, A
     user = db.get(User, claims.get("sub"))
     if user is None or user.role != Role.HOD or not user.mfa_secret_enc:
         raise AppError("DEMO_ONLY", "This helper is limited to HOD accounts.", 403)
-    secret = open_secret(user.mfa_secret_enc)
-    totp = pyotp.TOTP(secret)
     record_audit(db, event="DEMO_MFA_CODE_VIEWED", actor=user, resource_type="auth", ip=ip)
     db.commit()
-    return {
-        "code": totp.now(),
-        "seconds_remaining": 30 - (int(utcnow().timestamp()) % 30),
-        "warning": "DEMO_MODE only. This bypass is not available in production.",
-    }
+    return _unused_demo_code(user)
 
 
 def demo_code(db: Session, user: User, ip: str) -> dict[str, Any]:
@@ -431,15 +459,9 @@ def demo_code(db: Session, user: User, ip: str) -> dict[str, Any]:
         raise AppError("DEMO_DISABLED", "Demo helpers are disabled.", 403)
     if user.role != Role.HOD or not user.email.endswith("@praxis.demo") or not user.mfa_secret_enc:
         raise AppError("DEMO_ONLY", "This helper is limited to the demo HOD account.", 403)
-    secret = open_secret(user.mfa_secret_enc)
-    totp = pyotp.TOTP(secret)
     record_audit(db, event="DEMO_MFA_CODE_VIEWED", actor=user, resource_type="auth", ip=ip)
     db.commit()
-    return {
-        "code": totp.now(),
-        "seconds_remaining": 30 - (int(utcnow().timestamp()) % 30),
-        "warning": "DEMO_MODE only. This bypass is not available in production.",
-    }
+    return _unused_demo_code(user)
 
 
 def change_password(
