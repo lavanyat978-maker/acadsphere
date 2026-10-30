@@ -19,7 +19,7 @@ import { api, errorMessage, fieldErrors } from "../../lib/api";
 import { useApi } from "../../lib/useApi";
 import type { PracticeAnalytics, PracticeQuestionCreatePayload, PracticeTestDetail, Subject } from "../../lib/types";
 import { Badge, Button, Card, EmptyState, ErrorState, Field, Input, KeyValue, Modal, PageHeader, PageLoading, Select, Stat, Textarea } from "../../components/ui";
-import { difficultyTone, formatDateTime, scoreTone, statusTone, titleCase } from "../../lib/format";
+import { difficultyTone, formatDateTime, fromLocalInputValue, scoreTone, statusTone, titleCase, toLocalInputValue } from "../../lib/format";
 import { TopicBars } from "../../components/charts";
 import { useToast } from "../../context/ToastContext";
 
@@ -35,7 +35,14 @@ export function PracticeDetail() {
   // When set, the question modal edits this question instead of adding a new one.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const [details, setDetails] = useState({ title: "", description: "", duration_minutes: 30 });
+  const [details, setDetails] = useState({
+    title: "",
+    description: "",
+    duration_minutes: 30,
+    opens_at: "",
+    closes_at: "",
+    max_attempts: "",
+  });
   const [busy, setBusy] = useState(false);
   const [count, setCount] = useState(5);
   const [genDifficulty, setGenDifficulty] = useState("MEDIUM");
@@ -51,6 +58,8 @@ export function PracticeDetail() {
     { id: "d", text: "" },
   ]);
   const [correct, setCorrect] = useState("a");
+  const [questionType, setQuestionType] = useState<"SINGLE_CHOICE" | "MULTI_CHOICE" | "TRUE_FALSE">("SINGLE_CHOICE");
+  const [correctMany, setCorrectMany] = useState<string[]>([]);
   const [explanation, setExplanation] = useState("");
   const [marks, setMarks] = useState(1);
   const [questionDifficulty, setQuestionDifficulty] = useState("MEDIUM");
@@ -126,6 +135,8 @@ export function PracticeDetail() {
       { id: "d", text: "" },
     ]);
     setCorrect("a");
+    setQuestionType("SINGLE_CHOICE");
+    setCorrectMany([]);
     setExplanation("");
     setMarks(1);
     setQuestionDifficulty("MEDIUM");
@@ -141,7 +152,19 @@ export function PracticeDetail() {
       if (padded.length < 4 && !padded.some((option) => option.id === id)) padded.push({ id, text: "" });
     }
     setOptions(padded.slice(0, Math.max(4, question.options.length)));
+    const type = (["MULTI_CHOICE", "TRUE_FALSE"].includes(question.question_type) ? question.question_type : "SINGLE_CHOICE") as
+      "SINGLE_CHOICE" | "MULTI_CHOICE" | "TRUE_FALSE";
+    setQuestionType(type);
+    setCorrectMany(question.correct_answers ?? []);
     setCorrect(question.correct_answers?.[0] ?? padded[0]?.id ?? "a");
+    if (type === "TRUE_FALSE") {
+      setOptions([
+        { id: "a", text: "" },
+        { id: "b", text: "" },
+        { id: "c", text: "" },
+        { id: "d", text: "" },
+      ]);
+    }
     setExplanation(question.explanation ?? "");
     setMarks(question.marks);
     setQuestionDifficulty(question.difficulty);
@@ -149,14 +172,30 @@ export function PracticeDetail() {
   };
 
   const openDetails = () => {
-    setDetails({ title: data.title, description: data.description, duration_minutes: data.duration_minutes });
+    setDetails({
+      title: data.title,
+      description: data.description,
+      duration_minutes: data.duration_minutes,
+      opens_at: toLocalInputValue(data.opens_at),
+      closes_at: toLocalInputValue(data.closes_at),
+      max_attempts: data.max_attempts ? String(data.max_attempts) : "",
+    });
     setDetailsOpen(true);
   };
 
   const saveDetails = async () => {
     setBusy(true);
     try {
-      await api(`/practice/tests/${data.id}`, { method: "PATCH", body: details });
+      const schedule = {
+        opens_at: fromLocalInputValue(details.opens_at),
+        closes_at: fromLocalInputValue(details.closes_at),
+        max_attempts: details.max_attempts ? Number(details.max_attempts) : null,
+      };
+      // Content is fixed once a published set has attempts; only the schedule may change.
+      const body = untouched || data.status !== "PUBLISHED"
+        ? { title: details.title, description: details.description, duration_minutes: details.duration_minutes, ...schedule }
+        : schedule;
+      await api(`/practice/tests/${data.id}`, { method: "PATCH", body });
       toast("Practice set updated.", "success");
       setDetailsOpen(false);
       test.reload();
@@ -169,12 +208,25 @@ export function PracticeDetail() {
 
   const addQuestion = async () => {
     if (!topicId) return toast("Choose a topic for the question.", "error");
+    const filled = options.filter((option) => option.text.trim()).map((option) => ({ ...option, text: option.text.trim() }));
+    const filledIds = new Set(filled.map((option) => option.id));
+    const shape =
+      questionType === "TRUE_FALSE"
+        ? {
+            options: [{ id: "true", text: "True" }, { id: "false", text: "False" }],
+            correct_answers: [correct === "false" ? "false" : "true"],
+          }
+        : questionType === "MULTI_CHOICE"
+          ? { options: filled, correct_answers: correctMany.filter((id) => filledIds.has(id)) }
+          : { options: filled, correct_answers: [correct] };
+    if (questionType === "MULTI_CHOICE" && shape.correct_answers.length < 2) {
+      return toast("Tick at least two correct options for a multiple-answer question.", "error");
+    }
     const payload: PracticeQuestionCreatePayload = {
       topic_id: topicId,
       question_text: questionText,
-      question_type: "SINGLE_CHOICE",
-      options: options.filter((option) => option.text.trim()).map((option) => ({ ...option, text: option.text.trim() })),
-      correct_answers: [correct],
+      question_type: questionType,
+      ...shape,
       explanation,
       marks,
       difficulty: questionDifficulty,
@@ -234,9 +286,9 @@ export function PracticeDetail() {
                 Reopen draft
               </Button>
             )}
-            {editable && (untouched || data.status !== "PUBLISHED") && (
+            {editable && (
               <Button variant="ghost" onClick={openDetails} icon={<Pencil size={15} />}>
-                Edit details
+                {untouched || data.status !== "PUBLISHED" ? "Edit details" : "Edit schedule"}
               </Button>
             )}
             <Badge tone={statusTone(data.status)}>{titleCase(data.status)}</Badge>
@@ -262,7 +314,18 @@ export function PracticeDetail() {
       <div className="stat-grid stat-grid-tight">
         <Stat label="Questions" value={data.question_count} icon={<BookOpenCheck size={17} />} />
         <Stat label="Total marks" value={data.total_marks} icon={<Target size={17} />} />
-        <Stat label="Duration" value={`${data.duration_minutes} min`} icon={<Clock3 size={17} />} />
+        <Stat
+          label="Duration"
+          value={`${data.duration_minutes} min`}
+          hint={
+            [
+              data.opens_at ? `opens ${formatDateTime(data.opens_at)}` : "",
+              data.closes_at ? `closes ${formatDateTime(data.closes_at)}` : "",
+              data.max_attempts ? `${data.max_attempts} attempt(s) each` : "",
+            ].filter(Boolean).join(" · ") || "Always open · unlimited attempts"
+          }
+          icon={<Clock3 size={17} />}
+        />
         <Stat label="Attempts" value={data.attempt_count} hint={`${analytics.data?.student_rows.length ?? 0} students`} icon={<Users size={17} />} />
       </div>
 
@@ -385,12 +448,12 @@ export function PracticeDetail() {
                 <Card>
                   <div className="card-head"><div><div className="eyebrow">Roster</div><h3>Student outcomes</h3></div></div>
                   <div className="student-list">
-                    {(analytics.data.student_rows as Array<{ student_id: string; student_name: string; student_email: string; best_percentage: number; last_attempt: string; attempts: number }>).map((row) => (
-                      <div className="student-row" key={row.student_id}>
+                    {(analytics.data.student_rows as Array<{ student_id: string; student_name: string; student_email: string; best_percentage: number; last_attempt: string; attempts: number; last_attempt_id: string }>).map((row) => (
+                      <Link className="student-row student-row-link" key={row.student_id} to={`/teacher/practice/${data.id}/attempts/${row.last_attempt_id}`}>
                         <div><strong>{row.student_name}</strong><span>{row.student_email} · {row.attempts} attempt{row.attempts === 1 ? "" : "s"}</span></div>
                         <Badge tone={scoreTone(row.best_percentage)}>{row.best_percentage.toFixed(1)}%</Badge>
-                        <span className="muted">{formatDateTime(row.last_attempt)}</span>
-                      </div>
+                        <span className="muted">{formatDateTime(row.last_attempt)} · review latest</span>
+                      </Link>
                     ))}
                   </div>
                 </Card>
@@ -450,14 +513,27 @@ export function PracticeDetail() {
         }
       >
         <div className="form-grid">
-          <Field label="Title" className="span-2">
-            <Input value={details.title} onChange={(event) => setDetails({ ...details, title: event.target.value })} minLength={3} maxLength={200} />
+          {(untouched || data.status !== "PUBLISHED") && (
+            <>
+              <Field label="Title" className="span-2">
+                <Input value={details.title} onChange={(event) => setDetails({ ...details, title: event.target.value })} minLength={3} maxLength={200} />
+              </Field>
+              <Field label="Description" className="span-2">
+                <Textarea value={details.description} onChange={(event) => setDetails({ ...details, description: event.target.value })} rows={3} />
+              </Field>
+              <Field label="Duration (minutes)">
+                <Input type="number" min={1} max={240} value={details.duration_minutes} onChange={(event) => setDetails({ ...details, duration_minutes: Number(event.target.value) })} />
+              </Field>
+            </>
+          )}
+          <Field label="Attempts per student" hint="Empty = unlimited">
+            <Input type="number" min={1} max={50} value={details.max_attempts} onChange={(event) => setDetails({ ...details, max_attempts: event.target.value })} />
           </Field>
-          <Field label="Description" className="span-2">
-            <Textarea value={details.description} onChange={(event) => setDetails({ ...details, description: event.target.value })} rows={3} />
+          <Field label="Opens at" hint="Empty = open as soon as published">
+            <Input type="datetime-local" value={details.opens_at} onChange={(event) => setDetails({ ...details, opens_at: event.target.value })} />
           </Field>
-          <Field label="Duration (minutes)">
-            <Input type="number" min={1} max={240} value={details.duration_minutes} onChange={(event) => setDetails({ ...details, duration_minutes: Number(event.target.value) })} />
+          <Field label="Closes at" hint="Empty = never closes">
+            <Input type="datetime-local" value={details.closes_at} onChange={(event) => setDetails({ ...details, closes_at: event.target.value })} />
           </Field>
         </div>
       </Modal>
@@ -466,7 +542,7 @@ export function PracticeDetail() {
         open={addOpen}
         onClose={() => setAddOpen(false)}
         title={editingId ? "Edit question" : "Add a question"}
-        description="Single-choice questions only. Options and the correct answer appear to students after submission."
+        description="Single answer, multiple answers or true/false. Correct answers and the explanation appear to students after submission."
         width="640px"
         footer={
           <>
@@ -490,21 +566,69 @@ export function PracticeDetail() {
           <Field label="Question" className="span-2">
             <Textarea value={questionText} onChange={(event) => setQuestionText(event.target.value)} rows={3} placeholder="Write the question stem…" />
           </Field>
-          {options.map((option, index) => (
-            <Field label={`Option ${String.fromCharCode(65 + index)}`} key={option.id}>
-              <Input
-                value={option.text}
-                onChange={(event) =>
-                  setOptions((current) => current.map((item) => item.id === option.id ? { ...item, text: event.target.value } : item))
-                }
-              />
-            </Field>
-          ))}
-          <Field label="Correct option">
-            <Select value={correct} onChange={(event) => setCorrect(event.target.value)}>
-              {options.map((option, index) => <option key={option.id} value={option.id}>{String.fromCharCode(65 + index)}</option>)}
+          <Field label="Question type">
+            <Select
+              value={questionType}
+              onChange={(event) => {
+                const next = event.target.value as typeof questionType;
+                setQuestionType(next);
+                if (next === "TRUE_FALSE") setCorrect("true");
+                else if (correct === "true" || correct === "false") setCorrect("a");
+              }}
+            >
+              <option value="SINGLE_CHOICE">Single answer</option>
+              <option value="MULTI_CHOICE">Multiple answers</option>
+              <option value="TRUE_FALSE">True / false</option>
             </Select>
           </Field>
+          {questionType === "TRUE_FALSE" ? (
+            <Field label="Correct answer">
+              <Select value={correct === "false" ? "false" : "true"} onChange={(event) => setCorrect(event.target.value)}>
+                <option value="true">True</option>
+                <option value="false">False</option>
+              </Select>
+            </Field>
+          ) : (
+            <>
+              {options.map((option, index) => (
+                <Field label={`Option ${String.fromCharCode(65 + index)}`} key={option.id}>
+                  <Input
+                    value={option.text}
+                    onChange={(event) =>
+                      setOptions((current) => current.map((item) => item.id === option.id ? { ...item, text: event.target.value } : item))
+                    }
+                  />
+                </Field>
+              ))}
+              {questionType === "MULTI_CHOICE" ? (
+                <div className="span-2">
+                  <span className="field-label">Correct options (tick every correct one)</span>
+                  <div className="check-grid">
+                    {options.map((option, index) => (
+                      <label key={option.id} className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={correctMany.includes(option.id)}
+                          onChange={() =>
+                            setCorrectMany((current) =>
+                              current.includes(option.id) ? current.filter((id) => id !== option.id) : [...current, option.id],
+                            )
+                          }
+                        />
+                        Option {String.fromCharCode(65 + index)}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <Field label="Correct option">
+                  <Select value={correct} onChange={(event) => setCorrect(event.target.value)}>
+                    {options.map((option, index) => <option key={option.id} value={option.id}>{String.fromCharCode(65 + index)}</option>)}
+                  </Select>
+                </Field>
+              )}
+            </>
+          )}
           <Field label="Difficulty">
             <Select value={questionDifficulty} onChange={(event) => setQuestionDifficulty(event.target.value)}>
               <option value="EASY">Easy</option>

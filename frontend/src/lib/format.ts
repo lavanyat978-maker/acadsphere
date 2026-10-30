@@ -129,3 +129,16 @@ export function firstName(fullName?: string | null, fallback = ""): string {
   const given = parts.find((part) => !HONORIFICS.has(part.replace(/\.$/, "").toLowerCase()));
   return given ?? parts[0] ?? fallback;
 }
+
+
+/** ISO timestamp -> value for <input type="datetime-local"> in the viewer's timezone. */
+export function toLocalInputValue(value?: string | null): string {
+  if (!value) return "";
+  const date = new Date(value);
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
+/** <input type="datetime-local"> value -> ISO timestamp (null when empty). */
+export function fromLocalInputValue(value: string): string | null {
+  return value ? new Date(value).toISOString() : null;
+}

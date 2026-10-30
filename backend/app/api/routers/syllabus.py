@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.deps import Principal, require_staff
+from app.core.deps import Principal, require_staff, rate_limit
 from app.core.errors import AppError
 from app.db.session import get_db
 from app.schemas.academic import RagSearchResult, SyllabusDocumentOut
@@ -35,6 +35,7 @@ async def upload_document(
     file: UploadFile = File(...),
     principal: Principal = Depends(require_staff),
     db: Session = Depends(get_db),
+    _: None = Depends(rate_limit("upload", "RATE_LIMIT_UPLOAD")),
 ) -> dict:
     from starlette.concurrency import run_in_threadpool
 

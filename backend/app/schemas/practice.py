@@ -7,6 +7,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from app.models.enums import BloomLevel, Difficulty, QuestionType
 
 
+def _utc(value: datetime) -> datetime:
+    from datetime import timezone
+
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
 class OptionIn(BaseModel):
     id: str = Field(min_length=1, max_length=4)
     text: str = Field(min_length=1, max_length=600)
@@ -59,11 +65,33 @@ class PracticeTestCreate(BaseModel):
     topic_ids: list[str] = Field(min_length=1, max_length=20)
     questions: list[PracticeQuestionCreate] = Field(default_factory=list, max_length=60)
 
+    opens_at: datetime | None = None
+    closes_at: datetime | None = None
+    max_attempts: int | None = Field(default=None, ge=1, le=50)
+
+    @model_validator(mode="after")
+    def check_window(self):
+        if self.opens_at and self.closes_at and _utc(self.closes_at) <= _utc(self.opens_at):
+            raise ValueError("The closing time must be after the opening time")
+        return self
+
 
 class PracticeTestUpdate(BaseModel):
+    """Partial update. Send `null` for opens_at/closes_at/max_attempts to clear them."""
+
     title: str | None = Field(default=None, min_length=3, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
     duration_minutes: int | None = Field(default=None, ge=1, le=240)
+
+    opens_at: datetime | None = None
+    closes_at: datetime | None = None
+    max_attempts: int | None = Field(default=None, ge=1, le=50)
+
+    @model_validator(mode="after")
+    def check_window(self):
+        if self.opens_at and self.closes_at and _utc(self.closes_at) <= _utc(self.opens_at):
+            raise ValueError("The closing time must be after the opening time")
+        return self
 
 
 class GeneratePracticeQuestionsRequest(BaseModel):
@@ -90,6 +118,11 @@ class PracticeTestOut(BaseModel):
     last_attempt_at: datetime | None = None
     can_edit: bool = False
     created_by_name: str = ""
+    opens_at: datetime | None = None
+    closes_at: datetime | None = None
+    max_attempts: int | None = None
+    availability: str = "OPEN"  # OPEN, UPCOMING or CLOSED
+    attempts_remaining: int | None = None  # students only, when a limit is set
 
 
 class PracticeQuestionOut(BaseModel):

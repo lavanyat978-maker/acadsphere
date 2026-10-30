@@ -112,6 +112,7 @@ export default function App() {
               <Route path="/teacher/practice" element={<RequireRole role={STAFF}><PracticeStudio /></RequireRole>} />
               <Route path="/teacher/practice/new" element={<RequireRole role={STAFF}><PracticeNew /></RequireRole>} />
               <Route path="/teacher/practice/:testId" element={<RequireRole role={STAFF}><TeacherPracticeDetail /></RequireRole>} />
+              <Route path="/teacher/practice/:testId/attempts/:attemptId" element={<RequireRole role={STAFF}><Result staff /></RequireRole>} />
               <Route path="/teacher/exams" element={<RequireRole role={STAFF}><Exams /></RequireRole>} />
               <Route path="/teacher/exams/new" element={<RequireRole role={STAFF}><ExamNew /></RequireRole>} />
               <Route path="/teacher/exams/:examId" element={<RequireRole role={STAFF}><ExamDetail /></RequireRole>} />
@@ -123,6 +124,7 @@ export default function App() {
               <Route path="/hod/audit" element={<RequireRole role="HOD"><Audit /></RequireRole>} />
               <Route path="/hod/security" element={<RequireRole role="HOD"><Security /></RequireRole>} />
               <Route path="/hod/people" element={<RequireRole role="HOD"><People /></RequireRole>} />
+              <Route path="/hod/people/:userId/analytics" element={<RequireRole role="HOD"><Analytics /></RequireRole>} />
               <Route path="/hod/subjects" element={<RequireRole role="HOD"><Subjects /></RequireRole>} />
               <Route path="/account" element={<Account />} />
             </Route>

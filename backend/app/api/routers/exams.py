@@ -7,7 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, Response, 
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.deps import Principal, require_hod, require_mfa, require_staff
+from app.core.deps import Principal, require_hod, require_mfa, require_staff, rate_limit
 from app.db.session import get_db
 from app.schemas.exam import (
     AuthzReleaseOut,
@@ -235,6 +235,7 @@ def generate_paper(
     background: BackgroundTasks,
     principal: Principal = Depends(require_staff),
     db: Session = Depends(get_db),
+    _: None = Depends(rate_limit("generation", "RATE_LIMIT_GENERATION")),
 ) -> dict[str, Any]:
     request = exam_service.queue_generation(db, principal.user, exam_id, principal.ip)
     db.commit()

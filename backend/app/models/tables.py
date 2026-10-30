@@ -192,6 +192,10 @@ class PracticeTest(Base, TimestampMixin):
     question_count: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(20), default=PracticeTestStatus.DRAFT, index=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Optional availability window and attempt limit, enforced when a student starts.
+    opens_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closes_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    max_attempts: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     subject: Mapped[Subject] = relationship()
     topics: Mapped[list["PracticeTestTopic"]] = relationship(

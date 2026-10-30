@@ -100,14 +100,15 @@ def _variant(spec: dict[str, Any], variant: int) -> dict[str, Any]:
     return adjusted
 
 
-def _spread(targets: dict[str, int]) -> list:
+def _spread(targets: dict[str, int], key=None) -> list:
     """Round-robin a multi-set so adjacent slots vary rather than clumping.
 
     Grouping equal values (the original approach) gave every 10-mark slot the
     same topic and difficulty, which made balanced papers impossible to
     assemble for multi-mark patterns.
     """
-    buckets = [[key] * max(0, int(count)) for key, count in sorted(targets.items())]
+    ordered = sorted(targets, key=key)
+    buckets = [[item] * max(0, int(targets[item])) for item in ordered]
     result: list = []
     while True:
         progressed = False
@@ -136,7 +137,12 @@ def _build_demand(
 
     demand: list[dict[str, str]] = []
     topic_pairs = [(topic_id, topic_names.get(topic_id, topic_id)) for topic_id in topic_targets]
-    topic_cycle = _spread({topic_id: count for topic_id, count in topic_targets.items()})
+    # Order topics by name, not id: ids are random, so sorting by them made the
+    # slot plan, and with it whether generation succeeded, differ per exam.
+    topic_cycle = _spread(
+        {topic_id: count for topic_id, count in topic_targets.items()},
+        key=lambda topic_id: (topic_names.get(topic_id, ""), topic_id),
+    )
     if not topic_cycle:
         topic_cycle = [next(iter(topic_names), "")]
     names_by_id = dict(topic_pairs)
@@ -456,6 +462,7 @@ def _run_generation(request_id: str) -> None:
                 select(Topic, ExamTopic.weight_percent)
                 .join(ExamTopic, ExamTopic.topic_id == Topic.id)
                 .where(ExamTopic.exam_id == exam.id)
+                .order_by(Topic.name, Topic.id)
             )
             .all()
         )

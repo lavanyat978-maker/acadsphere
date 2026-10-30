@@ -212,10 +212,10 @@ class DemoProvider(LLMProvider):
 
         return int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big")
 
-    def _anchor(self, topic: str, context: list[dict[str, Any]]) -> str:
+    def _anchor(self, topic: str, context: list[dict[str, Any]], variant: str = "") -> str:
         sentences = self._sentences(context)
         if sentences:
-            return sentences[self._stable(topic) % len(sentences)]
+            return sentences[self._stable(f"{topic}|{variant}" if variant else topic) % len(sentences)]
         return f"{topic} is a core concept in this subject."
 
     @staticmethod
@@ -247,7 +247,10 @@ class DemoProvider(LLMProvider):
         difficulty = spec["difficulty"]
         bloom = spec["bloom_level"]
         subject = spec["subject_name"]
-        anchor = self._anchor(topic, context)
+        # A retry carries a variation hint; anchor it on a different syllabus
+        # sentence so it is not rejected as a near-copy of the last attempt.
+        hint = spec.get("variation_hint") or ""
+        anchor = self._anchor(topic, context, f"{hint}|{spec.get('slot_index', 0)}" if hint else "")
         anchor_short = anchor[:220].rstrip(".")
         rng = random.Random(f"{topic}|{marks}|{difficulty}|{bloom}|{spec.get('slot_index', 0)}")
         keywords = self._keywords(anchor, 3) or [topic.lower()]

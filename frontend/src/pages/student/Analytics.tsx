@@ -1,13 +1,18 @@
-import { Link } from "react-router-dom";
-import { ArrowRight, Lightbulb, Target, TrendingUp } from "lucide-react";
+import { Link, useParams } from "react-router-dom";
+import { ArrowLeft, ArrowRight, Lightbulb, Target, TrendingUp } from "lucide-react";
 import { useApi } from "../../lib/useApi";
 import type { StudentAnalytics } from "../../lib/types";
 import { Badge, Card, EmptyState, ErrorState, PageHeader, PageLoading, Progress, Stat } from "../../components/ui";
 import { ScoreRing, TrendChart, TopicBars } from "../../components/charts";
 import { scoreTone, titleCase } from "../../lib/format";
 
-export function Analytics() {
-  const analytics = useApi<StudentAnalytics>("/practice/analytics/me");
+/** Learning analytics for the signed-in student, or (studentId) any student for the HOD. */
+export function Analytics({ studentId }: { studentId?: string } = {}) {
+  const params = useParams();
+  const viewedId = studentId ?? params.userId;
+  const analytics = useApi<StudentAnalytics & { student?: { full_name: string; email: string } }>(
+    viewedId ? `/analytics/student/${viewedId}` : "/practice/analytics/me",
+  );
 
   if (analytics.loading && !analytics.data) return <PageLoading label="Crunching your learning signal" />;
   if (analytics.error) return <ErrorState message={analytics.error} onRetry={analytics.reload} />;
@@ -24,10 +29,19 @@ export function Analytics() {
 
   return (
     <div className="stack">
+      {viewedId && (
+        <Link to="/hod/people" className="back-link">
+          <ArrowLeft size={15} /> People
+        </Link>
+      )}
       <PageHeader
         eyebrow="Learning analytics"
-        title="Your performance, decomposed"
-        description="Topic-level mastery, difficulty response and the recommendations generated from your attempts."
+        title={viewedId ? `${data.student?.full_name ?? "Student"}: performance` : "Your performance, decomposed"}
+        description={
+          viewedId
+            ? `${data.student?.email ?? ""} · topic mastery, difficulty response and the recommendations this student sees.`
+            : "Topic-level mastery, difficulty response and the recommendations generated from your attempts."
+        }
       />
 
       <div className="analytics-top">

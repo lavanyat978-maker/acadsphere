@@ -75,7 +75,7 @@ def upload(
         subject_id=subject.id,
         uploaded_by=actor.id,
         original_name=filename[:255],
-        content_type=content_type or "application/octet-stream",
+        content_type=(content_type or "application/octet-stream")[:120],
         size_bytes=len(data),
         checksum=checksum,
         status="PROCESSING",

@@ -920,3 +920,6 @@ body.modal-open { overflow: hidden; }
 .error-list { margin: 6px 0 0; padding-left: 18px; }
 .import-results { max-height: 380px; overflow-y: auto; }
 .import-results code { font-family: var(--font-mono); font-size: 12px; user-select: all; }
+.student-row-link { color: inherit; text-decoration: none; border-radius: 8px; }
+.student-row-link:hover { background: var(--surface-2); }
+a.icon-btn { display: inline-flex; align-items: center; justify-content: center; }

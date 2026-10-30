@@ -98,7 +98,8 @@ class Settings(BaseSettings):
     RATE_LIMIT_LOGIN: int = 8
     RATE_LIMIT_MFA: int = 8
     RATE_LIMIT_GENERAL: int = 240
-    RATE_LIMIT_GENERATION: int = 10
+    RATE_LIMIT_GENERATION: int = 10  # AI generation calls (cost money with a real model)
+    RATE_LIMIT_UPLOAD: int = 30  # syllabus uploads
 
     # --- Generation / release --------------------------------------------
     GEN_INLINE: bool = True  # run the generation job in-process (dev)

@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { api, downloadPdf, errorMessage } from "../../lib/api";
 import { useApi } from "../../lib/useApi";
-import type { ReleaseQueueItem } from "../../lib/types";
+import type { ReleaseHistoryItem, ReleaseQueueItem } from "../../lib/types";
 import { Badge, Button, Card, EmptyState, ErrorState, Field, Modal, PageHeader, PageLoading, Textarea } from "../../components/ui";
 import { formatDateTime, relativeTime, statusTone, titleCase } from "../../lib/format";
 import { useToast } from "../../context/ToastContext";
@@ -26,6 +26,7 @@ interface TokenState {
 
 export function Releases() {
   const queue = useApi<ReleaseQueueItem[]>("/exams/release/queue");
+  const history = useApi<ReleaseHistoryItem[]>("/exams/release/history");
   const { toast } = useToast();
   const [selected, setSelected] = useState<ReleaseQueueItem | null>(null);
   const [reason, setReason] = useState("Scheduled internal assessment release");
@@ -58,6 +59,7 @@ export function Releases() {
       setToken({ token: result.release_token, expiresAt: result.expires_at });
       toast("Release authorized. Token held in memory for 10 minutes.", "success");
       queue.reload();
+      history.reload();
     } catch (err) {
       toast(errorMessage(err), "error");
     } finally {
@@ -96,6 +98,7 @@ export function Releases() {
       setPrinted(true);
       toast("Printable copy generated and downloaded.", "success");
       queue.reload();
+      history.reload();
     } catch (err) {
       toast(errorMessage(err), "error");
     } finally {
@@ -111,6 +114,7 @@ export function Releases() {
       toast("Paper marked released. Handover recorded.", "success");
       setSelected(null);
       queue.reload();
+      history.reload();
     } catch (err) {
       toast(errorMessage(err), "error");
     } finally {
@@ -293,6 +297,45 @@ export function Releases() {
           )}
         </div>
       </Modal>
+
+      <div className="card-head compact">
+        <div>
+          <div className="eyebrow">Release history</div>
+          <h3>Every authorisation, decryption and print</h3>
+        </div>
+      </div>
+      <div className="table-card">
+        {(history.data ?? []).length === 0 ? (
+          <EmptyState title="No releases yet" description="Authorisations appear here once the first release window is used." />
+        ) : (
+          <div className="table-wrap">
+            <table className="data-table data-table-compact">
+              <thead>
+                <tr>
+                  <th>Examination</th>
+                  <th>Status</th>
+                  <th>Authorised</th>
+                  <th>Decrypted</th>
+                  <th>Prints</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(history.data ?? []).map((row) => (
+                  <tr key={row.release_id}>
+                    <td className="table-primary"><strong>{row.exam_title}</strong><span>{row.subject_name}</span></td>
+                    <td><Badge tone={statusTone(row.status)}>{titleCase(row.status)}</Badge></td>
+                    <td className="table-primary"><strong>{formatDateTime(row.authorized_at)}</strong><span>{row.authorized_by_name}</span></td>
+                    <td className="muted">{row.decrypted_at ? formatDateTime(row.decrypted_at) : "—"}</td>
+                    <td>{row.print_count}</td>
+                    <td className="muted">{row.reason}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

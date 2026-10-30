@@ -23,7 +23,7 @@ hides what the API would refuse anyway):
 | Account | Own password and MFA | Own password and MFA | Own password; create, deactivate, reset any account |
 | Subjects | Sees enrolled subjects | Works in assigned subjects; adds/edits topics there | Creates subjects, assigns teachers, enrols students |
 | Syllabus library | — | Upload, search, delete own files (assigned subjects) | Everything, every subject |
-| Practice tests | Attempts published tests in enrolled subjects, autosaved, server-timed; results, mastery, history | Creates and publishes in assigned subjects; views co-teachers' tests read-only; cohort analytics | Everything a teacher can, in every subject; department analytics |
+| Practice tests | Attempts published tests in enrolled subjects within their open/close window and attempt limit, autosaved, server-timed; results, mastery, history | Creates single-answer, multiple-answer and true/false questions (by hand or generated), schedules and publishes in assigned subjects; reviews any student's attempt; co-teachers' tests read-only | Everything a teacher can, in every subject; department analytics and per-student analytics |
 | Internal exams | No access | Creates exams in assigned subjects, **AI-generated or uploaded PDF**; regenerates, replaces, cancels own exams; co-teachers' exams read-only; never reads a sealed paper | Everything a teacher can, in every subject |
 | Release | — | — | Authorise, decrypt, print (3 stamped copies per paper), mark released — MFA + time window |
 | Audit | — | — | Hash-chained audit log, chain verification, security events |
@@ -169,7 +169,8 @@ validation refuses to start with the mock provider.
 ## Tests
 
 ```bash
-cd backend && .venv/bin/python -m pytest        # 65 API + service tests
+cd backend && .venv/bin/python -m pytest        # 68 API + service tests
+TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost/praxis_test .venv/bin/python -m pytest   # same suite on PostgreSQL
 cd frontend && npm test && npm run build        # unit tests, typecheck + production build
 cd e2e && npm run all                            # browser walkthrough of every role, recorded as videos
 ```
@@ -205,6 +206,7 @@ The important ones:
 | `STORAGE_BACKEND` | `local` | `s3` for S3-compatible object storage |
 | `TRUSTED_PROXY_COUNT` | `0` | Proxies in front of the API that append to `X-Forwarded-For` (1 behind the bundled nginx) |
 | `MAX_PAPER_UPLOAD_MB` | `15` | Size limit for uploaded exam papers |
+| `RATE_LIMIT_GENERAL` / `RATE_LIMIT_GENERATION` / `RATE_LIMIT_UPLOAD` | `240` / `10` / `30` | Requests per minute per client: whole API / AI generation / syllabus uploads |
 | `GEN_STALE_MINUTES` | `30` | A generation request silent for this long is abandoned so the exam can be retried |
 | `RELEASE_WINDOW_MINUTES` | `120` | How long a release stays valid after the exam starts |
 | `PRINT_EARLY_OPEN_MINUTES` | `1440` | How early the HOD may open the release |
@@ -252,3 +254,4 @@ inside the exam window. Details, threat model and the production checklist live 
 - The PDF renderer is a controlled print format, not a print-shop typesetter.
 - Uploaded papers skip automated question validation; the HOD is the quality gate.
 - Rate limiting is in-memory, so it is per process; run one API process (the default).
+- Internal exams are sat on paper; Praxis secures and releases the paper but does not record exam marks.
