@@ -51,6 +51,7 @@ lists fields) · `423` account locked · `429` rate limited (`Retry-After` heade
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/users?role=&q=` | List accounts with subjects, MFA and status |
+| POST | `/users/import` | CSV (`email, full_name[, role, department, subjects]`, subjects as `CS501;CS502`). Validates every row first; on any error nothing is created and `details` lists the rows. Returns one-time passwords |
 | POST | `/users` | Create an account; returns a one-time `temporary_password` unless one is supplied. `subject_ids` assigns teachers / enrols students |
 | PATCH | `/users/{id}` | Edit name/department, activate or deactivate (ends sessions) |
 | POST | `/users/{id}/reset-password` | New one-time password, sessions ended |

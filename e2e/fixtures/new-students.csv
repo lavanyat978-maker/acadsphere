@@ -1,0 +1,4 @@
+email,full_name,role,department,subjects
+neha.kapoor@praxis.demo,Neha Kapoor,STUDENT,Computer Science,CS501
+rahul.menon@praxis.demo,Rahul Menon,STUDENT,Computer Science,CS501;CS502
+dev.joshi@praxis.demo,Prof. Dev Joshi,TEACHER,Computer Science,CS502

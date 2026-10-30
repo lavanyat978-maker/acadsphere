@@ -169,9 +169,14 @@ validation refuses to start with the mock provider.
 ## Tests
 
 ```bash
-cd backend && .venv/bin/python -m pytest        # 63 API + service tests
+cd backend && .venv/bin/python -m pytest        # 65 API + service tests
 cd frontend && npm test && npm run build        # unit tests, typecheck + production build
+cd e2e && npm run all                            # browser walkthrough of every role, recorded as videos
 ```
+
+`e2e/` drives the real UI for each role against a seeded stack, asserts the key outcomes
+(including syllabus and exam-paper uploads and CSV import), and records captioned MP4s;
+see [e2e/README.md](e2e/README.md).
 
 The backend suite covers authentication and lockout (including MFA code guessing), the
 first-HOD bootstrap and enrolment, forced password change, user administration,
@@ -246,5 +251,4 @@ inside the exam window. Details, threat model and the production checklist live 
   queue and a real worker process at larger scale.
 - The PDF renderer is a controlled print format, not a print-shop typesetter.
 - Uploaded papers skip automated question validation; the HOD is the quality gate.
-- TOTP codes are not marked as used, so a code can be replayed within its validity window.
 - Rate limiting is in-memory, so it is per process; run one API process (the default).

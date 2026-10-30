@@ -1,0 +1,13 @@
+{
+  "name": "praxis-e2e",
+  "private": true,
+  "description": "End-to-end walkthrough of every role, recorded as captioned videos",
+  "scripts": {
+    "walkthrough": "node walkthrough.cjs",
+    "videos": "bash make-videos.sh",
+    "all": "node walkthrough.cjs && bash make-videos.sh"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
+}
