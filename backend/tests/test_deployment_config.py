@@ -92,3 +92,25 @@ def test_embedding_dimensions_are_sent_only_when_configured(monkeypatch):
     monkeypatch.setattr(settings, "EMBEDDING_API_DIMENSIONS", 768)
     embedder.embed(["a"])
     assert sent["json"]["dimensions"] == 768
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("https://app.example", ["https://app.example"]),
+        ("https://a.example, https://b.example", ["https://a.example", "https://b.example"]),
+        ('["https://a.example","https://b.example"]', ["https://a.example", "https://b.example"]),
+    ],
+)
+def test_cors_origins_accept_plain_comma_and_json_environment_values(monkeypatch, raw, expected):
+    from app.core.config import Settings
+
+    monkeypatch.setenv("CORS_ORIGINS", raw)
+    assert Settings().CORS_ORIGINS == expected
+
+
+def test_upload_extensions_accept_a_plain_environment_value(monkeypatch):
+    from app.core.config import Settings
+
+    monkeypatch.setenv("ALLOWED_UPLOAD_EXTENSIONS", "PDF, txt")
+    assert Settings().ALLOWED_UPLOAD_EXTENSIONS == ["pdf", "txt"]

@@ -11,10 +11,10 @@ import json
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_SQLITE_PATH = BASE_DIR / "var" / "app.db"
@@ -60,7 +60,9 @@ class Settings(BaseSettings):
     DB_ECHO: bool = False
 
     # --- CORS -------------------------------------------------------------
-    CORS_ORIGINS: list[str] = Field(
+    # NoDecode: the library would otherwise JSON-parse the raw value and crash on a
+    # plain "https://a.example,https://b.example"; split_origins handles both forms.
+    CORS_ORIGINS: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
             "http://localhost:3001",
             "http://127.0.0.1:3001",
@@ -103,7 +105,7 @@ class Settings(BaseSettings):
     # --- Uploads ----------------------------------------------------------
     MAX_UPLOAD_MB: int = 15
     MAX_PAPER_UPLOAD_MB: int = 15
-    ALLOWED_UPLOAD_EXTENSIONS: list[str] = ["pdf", "docx", "txt"]
+    ALLOWED_UPLOAD_EXTENSIONS: Annotated[list[str], NoDecode] = ["pdf", "docx", "txt"]
 
     # --- Rate limits (per minute unless stated) ---------------------------
     RATE_LIMIT_LOGIN: int = 8
