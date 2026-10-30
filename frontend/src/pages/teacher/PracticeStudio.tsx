@@ -74,7 +74,10 @@ export function PracticeStudio() {
                   <td>
                     <div className="table-primary">
                       <strong>{test.title}</strong>
-                      <span>{test.topics.slice(0, 3).join(" · ") || "No topics"}</span>
+                      <span>
+                        {test.topics.slice(0, 3).join(" · ") || "No topics"}
+                        {!test.can_edit && ` · view only (${test.created_by_name})`}
+                      </span>
                     </div>
                   </td>
                   <td className="muted">{test.subject_name}</td>
@@ -115,7 +118,9 @@ export function PracticeStudio() {
         </Card>
       )}
 
-      <p className="muted small">Published {formatDate(new Date().toISOString())} · students only see published sets.</p>
+      <p className="muted small">
+        As of {formatDate(new Date().toISOString())} · students only see published sets in subjects they are enrolled in.
+      </p>
     </div>
   );
 }

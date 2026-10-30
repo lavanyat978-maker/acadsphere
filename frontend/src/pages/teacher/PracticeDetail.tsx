@@ -6,10 +6,12 @@ import {
   BookOpenCheck,
   CheckCircle2,
   Clock3,
+  Eye,
   Plus,
   Send,
   Sparkles,
   Target,
+  Trash2,
   Users,
 } from "lucide-react";
 import { api, errorMessage, fieldErrors } from "../../lib/api";
@@ -90,6 +92,24 @@ export function PracticeDetail() {
     }
   };
 
+  const deleteQuestion = async (questionId: string) => {
+    if (!window.confirm("Delete this question from the draft?")) return;
+    setBusy(true);
+    try {
+      await api(`/practice/tests/${data.id}/questions/${questionId}`, { method: "DELETE" });
+      toast("Question deleted.", "success");
+      test.reload();
+    } catch (err) {
+      toast(errorMessage(err), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const editable = data.can_edit;
+  const isDraft = data.status === "DRAFT";
+  const untouched = data.attempt_count === 0;
+
   const addQuestion = async () => {
     if (!topicId) return toast("Choose a topic for the question.", "error");
     const payload: PracticeQuestionCreatePayload = {
@@ -127,18 +147,28 @@ export function PracticeDetail() {
         description={data.description || "No description provided."}
         actions={
           <div className="page-actions-inline">
-            {data.status === "DRAFT" && (
+            {editable && isDraft && (
               <Button variant="secondary" onClick={() => setStatus("PUBLISHED")} loading={busy} icon={<Send size={15} />}>
                 Publish
               </Button>
             )}
-            {data.status === "PUBLISHED" && (
+            {editable && data.status === "PUBLISHED" && untouched && (
+              <Button variant="ghost" onClick={() => setStatus("DRAFT")} loading={busy}>
+                Back to draft
+              </Button>
+            )}
+            {editable && data.status === "PUBLISHED" && (
               <Button variant="ghost" onClick={() => setStatus("ARCHIVED")} loading={busy}>
                 Archive
               </Button>
             )}
-            {data.status === "ARCHIVED" && (
-              <Button variant="secondary" onClick={() => setStatus("DRAFT")} loading={busy}>
+            {editable && data.status === "ARCHIVED" && (
+              <Button variant="secondary" onClick={() => setStatus("PUBLISHED")} loading={busy}>
+                Republish
+              </Button>
+            )}
+            {editable && data.status === "ARCHIVED" && untouched && (
+              <Button variant="ghost" onClick={() => setStatus("DRAFT")} loading={busy}>
                 Reopen draft
               </Button>
             )}
@@ -146,6 +176,21 @@ export function PracticeDetail() {
           </div>
         }
       />
+
+      {!editable && (
+        <div className="notice">
+          <Eye size={16} />
+          <span>View only. {data.created_by_name} owns this practice set; only they or the HOD can change it.</span>
+        </div>
+      )}
+      {editable && !isDraft && (
+        <div className="notice">
+          <span>
+            Questions can be changed only while the set is a draft.
+            {untouched ? " Move it back to draft to edit." : " Students have attempted it, so archive it and create a new set to change questions."}
+          </span>
+        </div>
+      )}
 
       <div className="stat-grid stat-grid-tight">
         <Stat label="Questions" value={data.question_count} icon={<BookOpenCheck size={17} />} />
@@ -165,7 +210,7 @@ export function PracticeDetail() {
 
       {tab === "questions" ? (
         <div className="stack">
-          {data.status === "DRAFT" && (
+          {editable && isDraft && (
             <Card className="inline-actions-card">
               <div>
                 <strong>Build the question set</strong>
@@ -193,6 +238,16 @@ export function PracticeDetail() {
                         <span className="muted">{question.marks} mark{question.marks === 1 ? "" : "s"}</span>
                       </div>
                     </div>
+                    {editable && isDraft && (
+                      <button
+                        className="icon-btn danger"
+                        aria-label={`Delete question ${index + 1}`}
+                        disabled={busy}
+                        onClick={() => deleteQuestion(question.id)}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    )}
                   </div>
                   <div className="review-options compact-options">
                     {question.options.map((option) => {
@@ -218,7 +273,11 @@ export function PracticeDetail() {
                 icon={<Sparkles size={22} />}
                 title="No questions yet"
                 description="Generate a set from your uploaded syllabus or write the first question yourself."
-                action={<Button onClick={() => setGenerateOpen(true)} icon={<Sparkles size={15} />}>Generate questions</Button>}
+                action={
+                  editable && isDraft ? (
+                    <Button onClick={() => setGenerateOpen(true)} icon={<Sparkles size={15} />}>Generate questions</Button>
+                  ) : undefined
+                }
               />
             </Card>
           )}
@@ -249,9 +308,9 @@ export function PracticeDetail() {
                 <Card>
                   <div className="card-head"><div><div className="eyebrow">Roster</div><h3>Student outcomes</h3></div></div>
                   <div className="student-list">
-                    {(analytics.data.student_rows as Array<{ student_id: string; student_name: string; student_email: string; best_percentage: number; last_attempt: string }>).map((row) => (
+                    {(analytics.data.student_rows as Array<{ student_id: string; student_name: string; student_email: string; best_percentage: number; last_attempt: string; attempts: number }>).map((row) => (
                       <div className="student-row" key={row.student_id}>
-                        <div><strong>{row.student_name}</strong><span>{row.student_email}</span></div>
+                        <div><strong>{row.student_name}</strong><span>{row.student_email} · {row.attempts} attempt{row.attempts === 1 ? "" : "s"}</span></div>
                         <Badge tone={scoreTone(row.best_percentage)}>{row.best_percentage.toFixed(1)}%</Badge>
                         <span className="muted">{formatDateTime(row.last_attempt)}</span>
                       </div>

@@ -8,11 +8,13 @@ import {
   Gauge,
   Plus,
   Scale,
+  Sparkles,
   Trash2,
+  Upload,
 } from "lucide-react";
 import { api, errorMessage, fieldErrors } from "../../lib/api";
 import { useApi } from "../../lib/useApi";
-import type { Exam, Subject } from "../../lib/types";
+import type { Exam, ExamSource, Subject } from "../../lib/types";
 import { Badge, Button, Card, ErrorState, Field, Input, PageHeader, PageLoading, Select, Textarea } from "../../components/ui";
 import { useToast } from "../../context/ToastContext";
 
@@ -38,6 +40,8 @@ export function ExamNew() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [source, setSource] = useState<ExamSource>("GENERATED");
+  const [uploadMarks, setUploadMarks] = useState(50);
   const [subjectId, setSubjectId] = useState("");
   const [title, setTitle] = useState("");
   const [examType, setExamType] = useState("Internal Assessment 1");
@@ -62,10 +66,10 @@ export function ExamNew() {
     CREATE: 0,
   });
 
-  const subject = useMemo(
-    () => (subjects.data ?? []).find((item) => item.id === subjectId),
-    [subjects.data, subjectId],
-  );
+  // Only subjects the caller works in (every subject for the HOD).
+  const mySubjects = useMemo(() => (subjects.data ?? []).filter((item) => item.assigned_to_me), [subjects.data]);
+  const subject = useMemo(() => mySubjects.find((item) => item.id === subjectId), [mySubjects, subjectId]);
+  const uploaded = source === "UPLOADED";
   const totalMarks = pattern.reduce((sum, row) => sum + row.marks * row.count, 0);
   const questionCount = pattern.reduce((sum, row) => sum + row.count, 0);
   const topicSum = selectedTopics.reduce((sum, id) => sum + (weights[id] ?? 0), 0);
@@ -111,6 +115,13 @@ export function ExamNew() {
     if (!subjectId) return "Select a subject.";
     if (title.trim().length < 3) return "Provide an examination title.";
     if (!examDate) return "Choose the examination date and time.";
+    if (uploaded) {
+      if (uploadMarks < 5 || uploadMarks > 200) return "Total marks must be between 5 and 200.";
+      if (new Date(examDate).getTime() - Date.now() < 24 * 3600 * 1000) {
+        return "Uploaded papers must be in place before the release window opens, 24 hours before the exam. Pick a later date.";
+      }
+      return null;
+    }
     if (pattern.length === 0) return "Add at least one question group.";
     if (questionCount > 30) return "A paper may not exceed 30 questions.";
     if (selectedTopics.length === 0) return "Select at least one topic.";
@@ -134,9 +145,20 @@ export function ExamNew() {
     setBusy(true);
     setError(null);
     try {
+      const details = {
+        source,
+        subject_id: subjectId,
+        title: title.trim(),
+        exam_type: examType,
+        exam_date: new Date(examDate).toISOString(),
+        duration_minutes: duration,
+        venue,
+        instructions,
+      };
       const exam = await api<Exam>("/exams", {
         method: "POST",
-        body: {
+        body: uploaded ? { ...details, total_marks: uploadMarks } : {
+          source,
           subject_id: subjectId,
           title: title.trim(),
           exam_type: examType,
@@ -152,7 +174,7 @@ export function ExamNew() {
           retry_limit: retryLimit,
         },
       });
-      toast("Examination configuration saved as draft.", "success");
+      toast(uploaded ? "Examination created. Upload the question paper next." : "Examination configuration saved as draft.", "success");
       navigate(`/teacher/exams/${exam.id}`);
     } catch (err) {
       setError([errorMessage(err), ...fieldErrors(err)].join(" "));
@@ -165,12 +187,39 @@ export function ExamNew() {
       <Link to="/teacher/exams" className="back-link"><ArrowLeft size={15} /> Examinations</Link>
       <PageHeader
         eyebrow="New examination"
-        title="Configure the blueprint"
-        description="Everything here is frozen when you submit. Generation cannot change marks, topics or distributions."
+        title={uploaded ? "Set up an uploaded-paper exam" : "Configure the blueprint"}
+        description={
+          uploaded
+            ? "You will upload a finished PDF on the next screen. It is encrypted on receipt and only the HOD can open it, inside the release window."
+            : "Everything here is frozen when you submit. Generation cannot change marks, topics or distributions."
+        }
       />
 
       <form onSubmit={submit} className="form-layout">
         <div className="stack">
+          <Card className="form-card">
+            <div className="form-section-head">
+              <FileLock2 size={18} />
+              <div><h3>How is the paper produced?</h3><p>This choice is fixed once the examination is created.</p></div>
+            </div>
+            <div className="source-choice">
+              <button type="button" className={`source-option ${!uploaded ? "active" : ""}`} onClick={() => setSource("GENERATED")}>
+                <Sparkles size={20} />
+                <div>
+                  <strong>Generate with AI</strong>
+                  <span>Questions are generated from the syllabus library, validated in five levels and sealed. Nobody, including you, reads the paper before release.</span>
+                </div>
+              </button>
+              <button type="button" className={`source-option ${uploaded ? "active" : ""}`} onClick={() => setSource("UPLOADED")}>
+                <Upload size={20} />
+                <div>
+                  <strong>Upload my paper</strong>
+                  <span>Upload a finished PDF. It is encrypted immediately and printed by the HOD under the same controls. You can replace it until 24 hours before the exam.</span>
+                </div>
+              </button>
+            </div>
+          </Card>
+
           <Card className="form-card">
             <div className="form-section-head">
               <CalendarClock size={18} />
@@ -180,7 +229,7 @@ export function ExamNew() {
               <Field label="Subject">
                 <Select value={subjectId} onChange={(event) => { setSubjectId(event.target.value); setSelectedTopics([]); setWeights({}); }} required>
                   <option value="">Select subject…</option>
-                  {(subjects.data ?? []).map((item) => <option key={item.id} value={item.id}>{item.code} · {item.name}</option>)}
+                  {mySubjects.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.name}</option>)}
                 </Select>
               </Field>
               <Field label="Examination title">
@@ -203,12 +252,21 @@ export function ExamNew() {
               <Field label="Venue">
                 <Input value={venue} onChange={(event) => setVenue(event.target.value)} maxLength={160} />
               </Field>
+              {uploaded && (
+                <Field label="Total marks">
+                  <Input type="number" min={5} max={200} value={uploadMarks} onChange={(event) => setUploadMarks(Number(event.target.value))} />
+                </Field>
+              )}
               <Field label="Instructions" className="span-2">
                 <Textarea value={instructions} onChange={(event) => setInstructions(event.target.value)} rows={2} maxLength={3000} />
               </Field>
             </div>
+            {mySubjects.length === 0 && (
+              <p className="field-hint warning-text">You are not assigned to any subject yet. Ask the HOD to assign you.</p>
+            )}
           </Card>
 
+          {!uploaded && (<>
           <Card className="form-card">
             <div className="form-section-head">
               <FileLock2 size={18} />
@@ -332,12 +390,15 @@ export function ExamNew() {
             </div>
             <Input type="number" min={1} max={6} value={retryLimit} onChange={(event) => setRetryLimit(Number(event.target.value))} className="narrow-input" />
           </Card>
+          </>)}
 
           {error && <div className="form-error">{error}</div>}
 
           <div className="form-actions">
             <Link to="/teacher/exams"><Button type="button" variant="ghost">Cancel</Button></Link>
-            <Button type="submit" loading={busy} icon={<FileLock2 size={16} />}>Save draft configuration</Button>
+            <Button type="submit" loading={busy} icon={<FileLock2 size={16} />}>
+              {uploaded ? "Create and continue to upload" : "Save draft configuration"}
+            </Button>
           </div>
         </div>
 
@@ -347,14 +408,19 @@ export function ExamNew() {
             <h3>{title || "Untitled examination"}</h3>
             <p>{subject ? `${subject.code} · ${subject.name}` : "No subject selected"}</p>
             <div className="summary-rows">
-              <div><span>Total marks</span><strong>{totalMarks}</strong></div>
-              <div><span>Questions</span><strong>{questionCount}</strong></div>
-              <div><span>Topics</span><strong>{selectedTopics.length}</strong></div>
+              <div><span>Paper</span><strong>{uploaded ? "Uploaded PDF" : "AI generated"}</strong></div>
+              <div><span>Total marks</span><strong>{uploaded ? uploadMarks : totalMarks}</strong></div>
+              {!uploaded && <div><span>Questions</span><strong>{questionCount}</strong></div>}
+              {!uploaded && <div><span>Topics</span><strong>{selectedTopics.length}</strong></div>}
               <div><span>Duration</span><strong>{duration} min</strong></div>
             </div>
             <div className="side-note">
               <FileLock2 size={15} />
-              <span>Submitting freezes this blueprint with a SHA-256 hash. Any later change requires a new examination.</span>
+              <span>
+                {uploaded
+                  ? "The PDF is encrypted with AES-256-GCM on upload. Other teachers cannot open it; the HOD prints at most three stamped copies."
+                  : "Submitting freezes this blueprint with a SHA-256 hash. Any later change requires a new examination."}
+              </span>
             </div>
           </Card>
         </aside>

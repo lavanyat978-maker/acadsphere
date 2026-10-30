@@ -29,7 +29,9 @@ export function Syllabus() {
   const [searching, setSearching] = useState(false);
 
   useEffect(() => {
-    if (!subjectId && subjects.data?.length) setSubjectId(subjects.data[0].id);
+    // Open on a subject the caller can actually use, not merely the first alphabetically.
+    const first = subjects.data?.find((item) => item.assigned_to_me);
+    if (!subjectId && first) setSubjectId(first.id);
   }, [subjects.data, subjectId]);
 
   if (subjects.loading && !subjects.data) return <PageLoading label="Loading syllabus library" />;
@@ -90,7 +92,7 @@ export function Syllabus() {
         description="Upload the source material that grounds question generation. Every chunk is embedded and retrievable."
         actions={
           <Select value={subjectId} onChange={(event) => { setSubjectId(event.target.value); setResults(null); }} className="subject-select">
-            {(subjects.data ?? []).map((item) => <option key={item.id} value={item.id}>{item.code} · {item.name}</option>)}
+            {(subjects.data ?? []).filter((item) => item.assigned_to_me).map((item) => <option key={item.id} value={item.id}>{item.code} · {item.name}</option>)}
           </Select>
         }
       />

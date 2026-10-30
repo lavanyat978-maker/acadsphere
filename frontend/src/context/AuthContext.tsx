@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { api, clearToken, setToken } from "../lib/api";
+import { api } from "../lib/api";
 import type { LoginResponse, Meta, User } from "../lib/types";
 
 interface AuthValue {
@@ -15,12 +15,23 @@ interface AuthValue {
   meta: Meta | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<LoginResponse>;
-  verifyMfa: (mfaToken: string, code: string) => Promise<User>;
+  /** Complete a TOTP challenge, or (enroll=true) the first-sign-in authenticator enrolment. */
+  verifyMfa: (mfaToken: string, code: string, enroll?: boolean) => Promise<User>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthValue | null>(null);
+
+// Earlier builds kept a bearer token in localStorage. Sessions are cookie-only
+// now, so remove any leftover copy rather than leave a credential readable by script.
+function purgeLegacyToken() {
+  try {
+    localStorage.removeItem("praxis.access_token");
+  } catch {
+    /* storage unavailable */
+  }
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -37,6 +48,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    purgeLegacyToken();
     let cancelled = false;
     (async () => {
       const [current, metadata] = await Promise.all([
@@ -49,10 +61,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
     })();
     const onUnauthorized = () => setUser(null);
+    const onPasswordChange = () => {
+      setUser((current) => (current ? { ...current, must_change_password: true } : current));
+    };
     window.addEventListener("praxis:unauthorized", onUnauthorized);
+    window.addEventListener("praxis:password-change-required", onPasswordChange);
     return () => {
       cancelled = true;
       window.removeEventListener("praxis:unauthorized", onUnauthorized);
+      window.removeEventListener("praxis:password-change-required", onPasswordChange);
     };
   }, []);
 
@@ -62,20 +79,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       body: { email, password },
     });
     if (!result.mfa_required && result.user) {
-      if (result.access_token) setToken(result.access_token);
       setUser(result.user);
     }
     return result;
   }, []);
 
-  const verifyMfa = useCallback(async (mfaToken: string, code: string) => {
-    const result = await api<LoginResponse>("/auth/mfa/verify", {
+  const verifyMfa = useCallback(async (mfaToken: string, code: string, enroll = false) => {
+    const result = await api<LoginResponse>(enroll ? "/auth/mfa/enroll" : "/auth/mfa/verify", {
       method: "POST",
       body: { mfa_token: mfaToken, code },
     });
     if (!result.user) throw new Error("The verification response was incomplete.");
-    if (!result.access_token) throw new Error("The verification response was incomplete.");
-    setToken(result.access_token);
     setUser(result.user);
     return result.user;
   }, []);
@@ -84,7 +98,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       await api("/auth/logout", { method: "POST" });
     } finally {
-      clearToken();
       setUser(null);
     }
   }, []);

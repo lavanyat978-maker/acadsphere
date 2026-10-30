@@ -6,6 +6,7 @@ import {
   ArrowRight,
   CheckCircle2,
   Clock3,
+  CloudOff,
   Flag,
   Send,
   ShieldCheck,
@@ -30,6 +31,15 @@ export function AttemptPage() {
   const [submitting, setSubmitting] = useState(false);
   const submitted = useRef(false);
   const submitRef = useRef<(auto?: boolean) => void>(() => undefined);
+  // Autosave: answers are pushed to the server shortly after every change, so a
+  // refresh, crash or lost connection never loses work. The server grades the
+  // saved answers if the deadline passes without a submission.
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+  const dirty = useRef(false);
+  const restored = useRef(false);
+  const timeSpent = useRef<Record<string, number>>({});
+  const shownAt = useRef<number>(Date.now());
 
   useEffect(() => {
     if (!attempt.data) return;
@@ -53,8 +63,88 @@ export function AttemptPage() {
     submitRef.current(true);
   }, [remaining]);
 
+  // Restore autosaved answers once, when the attempt first loads.
+  useEffect(() => {
+    if (!attempt.data || restored.current) return;
+    restored.current = true;
+    const saved = attempt.data.saved_answers ?? {};
+    const initial: Record<string, string[]> = {};
+    for (const [questionId, entry] of Object.entries(saved)) {
+      initial[questionId] = entry.selected ?? [];
+      timeSpent.current[questionId] = entry.response_time_seconds ?? 0;
+    }
+    if (Object.keys(initial).length) {
+      setAnswers(initial);
+      toast(`Restored ${Object.keys(initial).length} saved answer(s).`, "info");
+    }
+    setSavedAt(attempt.data.last_saved_at);
+  }, [attempt.data, toast]);
+
   const questions = attempt.data?.questions ?? [];
   const question = questions[current];
+
+  // Track time on each question for the response-time analytics.
+  const recordTime = useCallback(() => {
+    const visible = questions[current];
+    if (!visible) return;
+    const now = Date.now();
+    timeSpent.current[visible.id] = (timeSpent.current[visible.id] ?? 0) + (now - shownAt.current) / 1000;
+    shownAt.current = now;
+  }, [questions, current]);
+
+  useEffect(() => {
+    shownAt.current = Date.now();
+    return () => recordTime();
+  }, [current, recordTime]);
+
+  const buildAnswers = useCallback(() => {
+    recordTime();
+    return Object.entries(answers)
+      .filter(([, selected]) => selected.length > 0)
+      .map(([questionId, selected]) => ({
+        question_id: questionId,
+        selected,
+        response_time_seconds: Math.round(timeSpent.current[questionId] ?? 0),
+      }));
+  }, [answers, recordTime]);
+
+  const save = useCallback(async () => {
+    if (!attempt.data || submitted.current || !dirty.current) return;
+    dirty.current = false;
+    setSaveState("saving");
+    try {
+      const result = await api<{ last_saved_at: string }>(`/practice/attempts/${attempt.data.id}/answers`, {
+        method: "PUT",
+        body: { answers: buildAnswers() },
+      });
+      setSavedAt(result.last_saved_at);
+      setSaveState("saved");
+    } catch (err) {
+      dirty.current = true;
+      setSaveState("error");
+      const code = (err as { code?: string }).code;
+      if (code === "ATTEMPT_EXPIRED" || code === "ATTEMPT_CLOSED") {
+        submitted.current = true;
+        toast("Time is up. Your saved answers were submitted.", "info");
+        navigate(`/student/results/${attemptId}`, { replace: true });
+      }
+    }
+  }, [attempt.data, attemptId, buildAnswers, navigate, toast]);
+
+  useEffect(() => {
+    if (!restored.current) return;
+    dirty.current = true;
+    const handle = window.setTimeout(() => void save(), 1200);
+    return () => window.clearTimeout(handle);
+  }, [answers, save]);
+
+  // Retry a failed save, and save on a slow cadence so response times stay current.
+  useEffect(() => {
+    const handle = window.setInterval(() => {
+      if (dirty.current || saveState === "error") void save();
+    }, 15000);
+    return () => window.clearInterval(handle);
+  }, [save, saveState]);
   const answeredCount = Object.values(answers).filter((selected) => selected.length > 0).length;
 
   const submit = useCallback(
@@ -63,15 +153,7 @@ export function AttemptPage() {
       submitted.current = true;
       setSubmitting(true);
       setConfirmOpen(false);
-      const payload = {
-        answers: Object.entries(answers)
-          .filter(([, selected]) => selected.length > 0)
-          .map(([questionId, selected]) => ({
-            question_id: questionId,
-            selected,
-            response_time_seconds: 15,
-          })),
-      };
+      const payload = { answers: buildAnswers() };
       try {
         const result = await api<PracticeResult>(`/practice/attempts/${attempt.data.id}/submit`, {
           method: "POST",
@@ -85,7 +167,7 @@ export function AttemptPage() {
         toast(errorMessage(err), "error");
       }
     },
-    [answers, attempt.data, navigate, toast],
+    [attempt.data, buildAnswers, navigate, toast],
   );
   submitRef.current = submit;
 
@@ -141,6 +223,11 @@ export function AttemptPage() {
             <Badge tone="neutral">{questions.length} questions</Badge>
             <Badge tone="neutral">{attempt.data.total_marks} marks</Badge>
             <span className="server-note"><ShieldCheck size={13} /> Server-timed</span>
+            <span className="autosave-status" aria-live="polite">
+              {saveState === "saving" && "Saving…"}
+              {saveState === "error" && <><CloudOff size={13} /> Not saved — retrying</>}
+              {(saveState === "saved" || saveState === "idle") && savedAt && <>Saved {new Date(savedAt).toLocaleTimeString()}</>}
+            </span>
           </div>
         </div>
         <div className={`timer ${criticalTime ? "timer-critical" : ""}`}>

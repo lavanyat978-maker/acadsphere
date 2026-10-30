@@ -120,3 +120,12 @@ export function secondsToClock(totalSeconds: number): string {
   const seconds = clamped % 60;
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
+
+const HONORIFICS = new Set(["dr", "prof", "mr", "mrs", "ms", "miss", "sir", "madam"]);
+
+/** First given name, skipping titles such as "Dr." or "Prof.". */
+export function firstName(fullName?: string | null, fallback = ""): string {
+  const parts = (fullName ?? "").trim().split(/\s+/).filter(Boolean);
+  const given = parts.find((part) => !HONORIFICS.has(part.replace(/\.$/, "").toLowerCase()));
+  return given ?? parts[0] ?? fallback;
+}

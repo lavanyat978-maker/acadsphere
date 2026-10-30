@@ -32,3 +32,13 @@ describe("format helpers", () => {
     expect(bytes(5 * 1024 * 1024)).toBe("5.0 MB");
   });
 });
+
+describe("firstName", () => {
+  it("skips honorifics", async () => {
+    const { firstName } = await import("./format");
+    expect(firstName("Dr. Meera Raghavan")).toBe("Meera");
+    expect(firstName("Prof. Arjun Nair")).toBe("Arjun");
+    expect(firstName("Riya Sharma")).toBe("Riya");
+    expect(firstName("", "there")).toBe("there");
+  });
+});
