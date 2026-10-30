@@ -5,7 +5,7 @@ Branches: work and test on `master`; merging `master` into `main` is the release
 
 1. **Tests**: the full CI workflow (backend on SQLite and Postgres, frontend). Nothing below runs if it fails.
 2. **Image**: builds `backend/Dockerfile`, pushes `ghcr.io/<owner>/<repo>-backend:sha-<commit>`.
-3. **Backend**: tells Railway to run that image, then waits until `/api/health` reports the same commit.
+3. **Backend**: tells the host (Railway or Render, chosen by the `BACKEND_HOST` variable) to run that image, then waits until `/api/health` reports the same commit.
 4. **Frontend**: builds the SPA, deploys it to Vercel, and checks `/api/health` *through* Vercel's proxy.
 5. **Prune**: deletes all but the newest 3 image versions in GHCR. It runs last, so a failed deploy never deletes the images you would roll back to.
 
@@ -60,6 +60,29 @@ Create an API key in Google AI Studio. Pick the chat and embedding model ids fro
 
 Railway sets `PORT` itself.
 
+### 3b. Render instead of Railway
+Use this if Railway is unavailable. Set the GitHub variable `BACKEND_HOST` to `render`; unset (or anything else) means Railway.
+
+Free-tier facts (render.com/docs/free): the service sleeps after 15 minutes without traffic and takes about a minute to wake; it can restart at any time, which interrupts a running generation (the exam is marked failed and can be retried); there is no shell and no persistent disk. Fine for a demo; use a paid always-on instance for real exams.
+
+1. Let the pipeline build the first image: merge to `main` (the deploy step will fail, which is expected), or run the **Deploy** workflow manually. The image `ghcr.io/<owner>/<repo>-backend:latest` now exists. Make the package public (GitHub → Packages → Package settings), or add GHCR registry credentials in Render.
+2. Render → **New → Web Service → Existing image**. Image URL: `ghcr.io/<owner>/<repo>-backend:latest` (lowercase). Instance type: Free. Health check path: `/api/health`.
+3. Add the same environment variables as the Railway table above. Leave `PORT` unset; Render provides it and the container honours it.
+4. Settings → **Deploy Hook**: copy the URL. It is a secret.
+5. GitHub: secret `RENDER_DEPLOY_HOOK_URL`; variables `BACKEND_HOST=render` and `BACKEND_URL=https://<service>.onrender.com`. `RAILWAY_*` are not needed.
+6. Re-run the **Deploy** workflow. The deploy hook passes the exact `sha-…` tag; Render rejects it (HTTP 400) if the image path differs from the service's image URL.
+
+**First admin without a shell** (works for any host): run the CLI from your computer with Docker, pointed at the production database:
+
+```bash
+docker run --rm -e ENV=production -e DEMO_MODE=false -e COOKIE_SECURE=true \
+  -e JWT_SECRET=... -e MASTER_KEY=... -e LLM_PROVIDER=openai -e LLM_API_KEY=... \
+  -e DATABASE_URL='postgresql://…?sslmode=require' \
+  ghcr.io/<owner>/<repo>-backend:latest \
+  python -m app.cli create-user --role HOD --email you@college.edu --name "Your Name"
+```
+(Production mode refuses to start without the security settings, hence the extra variables. Use the same values as the service.)
+
 ### 4. Vercel
 Create a project from this repository but **leave Root Directory empty**, and keep Git auto-deploys off (`frontend/vercel.json` already disables them). The pipeline runs the Vercel CLI inside `frontend/`. Framework preset: Vite. No environment variables are needed.
 
@@ -85,7 +108,7 @@ With the same values in a local `backend/.env` (never committed):
 cd backend && python -m app.cli check          # database, storage, llm — prints PASS/FAIL, never secrets
 ```
 
-### 7. First deploy and first admin
+### 7. First deploy and first admin (Railway)
 Merge `master` into `main`. When the pipeline is green, create the first HOD against production:
 
 ```bash
