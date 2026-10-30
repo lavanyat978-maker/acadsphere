@@ -17,6 +17,7 @@ class UserOut(BaseModel):
     role: str
     department: str
     mfa_enabled: bool = False
+    must_change_password: bool = False
     last_login_at: datetime | None = None
 
 
@@ -33,6 +34,11 @@ class MfaChallengeResponse(BaseModel):
     mfa_token: str
     expires_at: datetime
     method: str = "TOTP"
+    # First HOD sign-in: enrol this secret in an authenticator, then call
+    # /auth/mfa/enroll with a code from it.
+    enrollment_required: bool = False
+    secret: str | None = None
+    otpauth_uri: str | None = None
 
 
 class MfaVerifyRequest(BaseModel):
@@ -57,17 +63,16 @@ class PasswordChangeRequest(BaseModel):
     @field_validator("new_password")
     @classmethod
     def password_strength(cls, value: str) -> str:
-        classes = sum(
-            [
-                any(char.islower() for char in value),
-                any(char.isupper() for char in value),
-                any(char.isdigit() for char in value),
-                any(not char.isalnum() for char in value),
-            ]
-        )
-        if classes < 3:
-            raise ValueError("Password must mix at least three of: lower, upper, digit, symbol")
+        from app.core.security import password_policy_problem
+
+        problem = password_policy_problem(value)
+        if problem:
+            raise ValueError(problem)
         return value
+
+
+class MfaDisableRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=6)
 
 
 class DemoCodeRequest(BaseModel):

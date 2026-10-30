@@ -14,19 +14,29 @@ silent possibility and becomes a detectable, audited event.
 
 ## What it does
 
-| Role | Capabilities |
-| --- | --- |
-| **Student** | Adaptive practice tests, timed attempts with autosave, per-attempt results, topic mastery analytics, attempt history. No access to papers. |
-| **Teacher** | Upload syllabus documents (PDF/DOCX/TXT) and build practice tests; configure internal exams; trigger RAG-grounded generation; see validation reports; never sees a sealed paper. |
-| **HOD** | Everything a teacher can do, plus department analytics, the release queue, decrypt-and-print inside a time window, mark papers released, and the tamper-evident audit log. |
+Three roles, enforced on the server in `backend/app/services/access.py` (the UI only
+hides what the API would refuse anyway):
 
-Key product rules enforced in code, not documentation:
+| Area | Student | Teacher | HOD |
+| --- | --- | --- | --- |
+| Sign-in | Password, optional TOTP | Password, optional TOTP | Password + **mandatory** TOTP (enrolled at first sign-in) |
+| Account | Own password and MFA | Own password and MFA | Own password; create, deactivate, reset any account |
+| Subjects | Sees enrolled subjects | Works in assigned subjects; adds/edits topics there | Creates subjects, assigns teachers, enrols students |
+| Syllabus library | — | Upload, search, delete own files (assigned subjects) | Everything, every subject |
+| Practice tests | Attempts published tests in enrolled subjects, autosaved, server-timed; results, mastery, history | Creates and publishes in assigned subjects; views co-teachers' tests read-only; cohort analytics | Everything a teacher can, in every subject; department analytics |
+| Internal exams | No access | Creates exams in assigned subjects, **AI-generated or uploaded PDF**; regenerates, replaces, cancels own exams; co-teachers' exams read-only; never reads a sealed paper | Everything a teacher can, in every subject |
+| Release | — | — | Authorise, decrypt, print (3 stamped copies per paper), mark released — MFA + time window |
+| Audit | — | — | Hash-chained audit log, chain verification, security events |
 
-- A teacher who creates an exam still **cannot read the paper** afterwards. Generation
-  ends with the paper sealed; only the HOD release flow opens it.
-- Practice questions are visible to students; **exam questions are not**, ever, through
-  any API a teacher or student token can reach.
-- Printing is capped at three controlled copies per release and every copy is audited.
+Key product rules enforced in code:
+
+- An AI-generated paper is sealed before anyone can read it; the teacher who configured
+  it never sees it. An uploaded paper is encrypted on receipt, so nobody other than its
+  author can read it before release.
+- Practice questions are visible to enrolled students; exam questions never reach any
+  student or teacher API.
+- Printing is capped at three numbered copies per paper, across every authorisation, and
+  every copy is audited.
 
 ## Architecture
 
@@ -55,6 +65,17 @@ cp .env.example .env
 # edit .env: set POSTGRES_PASSWORD and a random JWT_SECRET, plus MASTER_KEY
 docker compose up --build
 ```
+
+To run without the demo institution, set `DEMO_MODE=false` and `SEED_ON_STARTUP=false`,
+then create the first HOD inside the backend container:
+
+```bash
+docker compose exec backend python -m app.cli create-user --role HOD \
+  --email hod@your-college.edu --name "Dr. Your Name"
+```
+
+It prints a one-time password. The HOD signs in, enrols an authenticator app, sets a new
+password, and creates every other account from **People**.
 
 - UI: <http://localhost:8080>
 - API: <http://localhost:8000/api/health>, OpenAPI at <http://localhost:8000/docs>
@@ -86,9 +107,10 @@ The workspace ships `.vscode/` configuration, so nothing needs to be typed into 
 terminal:
 
 1. Install the recommended extensions when prompted (Python, Pylance, debugpy).
-2. Open the Command Palette → **Tasks: Run Task** → `setup: create python venv`, then
-   `setup: install frontend deps`. (One-time; a `.env` already exists at the repo root
-   with development defaults.)
+2. Open the Command Palette → **Tasks: Run Task** → `setup: create .env`,
+   `setup: create python venv`, then `setup: install frontend deps` (one-time). The
+   VS Code tasks put the virtualenv at the repository root (`.venv`); the manual steps
+   above use `backend/.venv` — either works.
 3. **Run and Debug** → `▶ Full stack (API + Vite)` starts both processes in one click;
    the API listens on <http://127.0.0.1:8000> and Vite on <http://localhost:3001>, with
    `/api` proxied to the API. (3000 was moved to 3001 to avoid colliding with
@@ -117,11 +139,17 @@ On Windows, create the venv in `backend` with `py -m venv backend\.venv` and poi
 All demo accounts use the password `Praxis@2026#Demo` and exist only while
 `DEMO_MODE=true` (production refuses to boot with demo mode on).
 
-| Email | Role | MFA |
+| Email | Role | Notes |
 | --- | --- | --- |
-| `hod@praxis.demo` | Head of Department | TOTP required |
-| `teacher@praxis.demo` | Teacher | optional |
-| `student@praxis.demo` | Student | optional |
+| `hod@praxis.demo` | Head of Department | TOTP required (demo helper fills the code) |
+| `teacher@praxis.demo` | Teacher | Assigned to DBMS and Operating Systems |
+| `kavya@praxis.demo` | Teacher | Operating Systems only; owns the uploaded-paper demo exam |
+| `student@praxis.demo` | Student | Enrolled in both subjects |
+| `aman@praxis.demo` | Student | Enrolled in both subjects |
+| `sara@praxis.demo` | Student | Enrolled in Operating Systems only |
+
+The seeded "DBMS Internal Assessment 1" sits inside its release window for about 20
+hours after seeding, so the HOD release flow can be tried straight away.
 
 MFA is a real TOTP implementation. In demo mode the login screen shows the current
 code for the account so a reviewer can complete the challenge; the code endpoint
@@ -141,13 +169,22 @@ validation refuses to start with the mock provider.
 ## Tests
 
 ```bash
-cd backend && .venv/bin/python -m pytest        # 35 API + service tests
-cd frontend && npm run build                    # typecheck + production build
+cd backend && .venv/bin/python -m pytest        # 65 API + service tests
+cd frontend && npm test && npm run build        # unit tests, typecheck + production build
+cd e2e && npm run all                            # browser walkthrough of every role, recorded as videos
 ```
 
-The backend suite covers authentication and lockout, MFA, cookie/CSRF enforcement,
-role isolation, the attempt lifecycle, the paper state machine, encryption and
-integrity verification, validation rejection, and audit-chain tamper detection. All
+`e2e/` drives the real UI for each role against a seeded stack, asserts the key outcomes
+(including syllabus and exam-paper uploads and CSV import), and records captioned MP4s;
+see [e2e/README.md](e2e/README.md).
+
+The backend suite covers authentication and lockout (including MFA code guessing), the
+first-HOD bootstrap and enrolment, forced password change, user administration,
+cookie/CSRF enforcement, every role's allowed and denied paths (including co-teacher
+read-only access and student enrolment scoping), autosave and the server-enforced
+deadline, uploaded papers (sealing, replacement, stamped printing), generation failure
+and retry, cancellation, the per-paper print cap, encryption and integrity verification,
+validation rejection, and audit-chain tamper detection. All
 tests run against an isolated SQLite database and never touch development data.
 
 ## Configuration
@@ -166,6 +203,9 @@ The important ones:
 | `COOKIE_SECURE` | `false` | Must be `true` in production (HTTPS) |
 | `LLM_PROVIDER` / `LLM_API_KEY` | `auto` / empty | `auto` → demo generator without a key |
 | `STORAGE_BACKEND` | `local` | `s3` for S3-compatible object storage |
+| `TRUSTED_PROXY_COUNT` | `0` | Proxies in front of the API that append to `X-Forwarded-For` (1 behind the bundled nginx) |
+| `MAX_PAPER_UPLOAD_MB` | `15` | Size limit for uploaded exam papers |
+| `GEN_STALE_MINUTES` | `30` | A generation request silent for this long is abandoned so the exam can be retried |
 | `RELEASE_WINDOW_MINUTES` | `120` | How long a release stays valid after the exam starts |
 | `PRINT_EARLY_OPEN_MINUTES` | `1440` | How early the HOD may open the release |
 | `SEED_ON_STARTUP` | `false` | Seed demo data on boot (demo mode only) |
@@ -210,3 +250,5 @@ inside the exam window. Details, threat model and the production checklist live 
   and touches no request-scoped state, so it is the seam for moving generation onto a
   queue and a real worker process at larger scale.
 - The PDF renderer is a controlled print format, not a print-shop typesetter.
+- Uploaded papers skip automated question validation; the HOD is the quality gate.
+- Rate limiting is in-memory, so it is per process; run one API process (the default).

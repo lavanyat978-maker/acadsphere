@@ -32,6 +32,23 @@ describe("api client", () => {
     expect(init.credentials).toBe("same-origin");
   });
 
+  it("never sends a bearer token from script-readable storage", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ok: true }));
+    await api("/auth/me");
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers.Authorization).toBeUndefined();
+  });
+
+  it("fetches a CSRF token first when the cookie is missing", async () => {
+    vi.stubGlobal("document", { cookie: "" });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ csrf_token: "fresh-token" }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }));
+    await api("/practice/tests", { method: "POST", body: {} });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/auth/csrf");
+    expect(fetchMock.mock.calls[1][1].headers["X-CSRF-Token"]).toBe("fresh-token");
+  });
+
   it("does not attach CSRF on GET", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ ok: true }));
     await api("/health");

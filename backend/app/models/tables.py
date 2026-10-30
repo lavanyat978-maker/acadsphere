@@ -1,4 +1,4 @@
-"""SQLAlchemy models (normalized schema, 24 tables).
+"""SQLAlchemy models (normalized schema).
 
 Security notes baked into the schema:
 * `question_pool.question_text` is nulled ("sealed") once the final paper is
@@ -31,6 +31,7 @@ from app.models.enums import (
     AttemptStatus,
     BloomLevel,
     Difficulty,
+    ExamSource,
     ExamStatus,
     GenerationStatus,
     PaperState,
@@ -69,10 +70,13 @@ class User(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     mfa_secret_enc: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Last accepted TOTP time-step: a code is single use even inside its validity window.
+    mfa_last_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
     failed_login_count: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     token_version: Mapped[int] = mapped_column(Integer, default=0)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
 
     teacher_subjects: Mapped[list["SubjectTeacher"]] = relationship(
         back_populates="teacher", cascade="all, delete-orphan"
@@ -108,6 +112,18 @@ class SubjectTeacher(Base):
 
     subject: Mapped[Subject] = relationship(back_populates="teachers")
     teacher: Mapped[User] = relationship(back_populates="teacher_subjects")
+
+
+class StudentSubject(Base):
+    """Enrolment: a student sees practice tests only for subjects they are enrolled in."""
+
+    __tablename__ = "student_subjects"
+    __table_args__ = (UniqueConstraint("subject_id", "student_id", name="uq_subject_student"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    subject_id: Mapped[str] = mapped_column(ForeignKey("subjects.id", ondelete="CASCADE"), index=True)
+    student_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    enrolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 class Topic(Base, TimestampMixin):
@@ -234,6 +250,10 @@ class PracticeAttempt(Base, TimestampMixin):
     accuracy: Mapped[float] = mapped_column(Float, default=0)
     duration_seconds: Mapped[int] = mapped_column(Integer, default=0)
     auto_submitted: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Autosaved selections ({question_id: {"selected": [...], "response_time_seconds": n}}).
+    # Graded at submission, and at the deadline if the student never submits.
+    draft_answers: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
+    last_saved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     test: Mapped[PracticeTest] = relationship()
     answers: Mapped[list["PracticeAnswer"]] = relationship(
@@ -292,6 +312,7 @@ class InternalExam(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(30), default=ExamStatus.DRAFT, index=True)
     instructions: Mapped[str] = mapped_column(Text, default="")
     venue: Mapped[str] = mapped_column(String(160), default="Examination Hall A")
+    source: Mapped[str] = mapped_column(String(20), default=ExamSource.GENERATED)
 
     subject: Mapped[Subject] = relationship()
     topics: Mapped[list["ExamTopic"]] = relationship(
@@ -470,6 +491,10 @@ class EncryptedPaper(Base):
     plaintext_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     ciphertext_bytes: Mapped[int] = mapped_column(Integer, default=0)
     aad: Mapped[str] = mapped_column(String(255), default="")
+    # application/json for generated papers, application/pdf for uploaded ones.
+    content_type: Mapped[str] = mapped_column(String(80), default="application/json")
+    original_name: Mapped[str] = mapped_column(String(255), default="")
+    page_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
@@ -539,4 +564,6 @@ class SecurityEvent(Base):
     ip_address: Mapped[str] = mapped_column(String(64), default="")
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
     resolved: Mapped[bool] = mapped_column(Boolean, default=False)
+    resolved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)

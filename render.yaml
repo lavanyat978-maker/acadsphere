@@ -37,6 +37,10 @@ services:
       # makes a cross-origin call and CORS can stay empty. CORS_ORIGINS as an
       # empty array is not expressible in this blueprint, so if you later host
       # the SPA on a different origin, set this key in the dashboard instead.
+      # Sites worker sets X-Forwarded-For to the visitor, Render's proxy appends
+      # the worker: two trusted hops.
+      - key: TRUSTED_PROXY_COUNT
+        value: "2"
       - key: STORAGE_BACKEND
         value: local
       - key: STORAGE_LOCAL_PATH

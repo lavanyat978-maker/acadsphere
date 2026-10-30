@@ -205,11 +205,17 @@ class DemoProvider(LLMProvider):
                     sentences.append(sentence)
         return sentences
 
+    @staticmethod
+    def _stable(text: str) -> int:
+        """Process-independent hash; Python's hash() changes on every restart."""
+        import hashlib
+
+        return int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big")
+
     def _anchor(self, topic: str, context: list[dict[str, Any]]) -> str:
         sentences = self._sentences(context)
         if sentences:
-            seed = abs(hash(topic)) % len(sentences)
-            return sentences[seed]
+            return sentences[self._stable(topic) % len(sentences)]
         return f"{topic} is a core concept in this subject."
 
     @staticmethod
@@ -316,6 +322,29 @@ class DemoProvider(LLMProvider):
             "note": "Heuristic demo assessment - not a real model judgement.",
         }
 
+    def _stem(self, subject: str, topic: str, anchor: str, index: int) -> str:
+        """A question stem naming the concept the anchor sentence is about.
+
+        Stems must differ: practice tests drop questions whose text repeats.
+        """
+        focus = (self._keywords(anchor, 1) or [topic.lower()])[0]
+        templates = [
+            "In {topic}, which statement about {focus} is correct?",
+            "Which of the following correctly describes {focus} ({topic})?",
+            "According to the {subject} syllabus, what is true of {focus}?",
+            "Select the accurate statement about {focus} in {topic}.",
+        ]
+        return templates[index % len(templates)].format(topic=topic, focus=focus, subject=subject)
+
+    @staticmethod
+    def _swap_term(sentence: str, term: str, replacement: str) -> str:
+        pattern = re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
+
+        def keep_case(match: re.Match[str]) -> str:
+            return replacement[:1].upper() + replacement[1:] if match.group(0)[:1].isupper() else replacement
+
+        return pattern.sub(keep_case, sentence, count=1)
+
     def generate_practice_questions(
         self,
         *,
@@ -325,32 +354,53 @@ class DemoProvider(LLMProvider):
         difficulty: str,
         context: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
+        """Single-choice questions built from real syllabus sentences.
+
+        The correct option is a sentence taken from the retrieved material.
+        Distractors are the same sentence with one key term swapped for a term
+        from elsewhere in the syllabus, so they read plausibly but are false.
+        The correct option's position is spread across a-d.
+        """
+        sentences = [s for s in self._sentences(context) if 50 <= len(s) <= 260]
+        vocabulary = sorted({word for sentence in sentences for word in self._keywords(sentence, 12)})
         questions: list[dict[str, Any]] = []
-        for index in range(count):
-            topic = topics[index % len(topics)] if topics else subject
-            anchor = self._anchor(topic, context)
-            keywords = self._keywords(anchor, 3) or [topic.lower()]
-            focus = keywords[index % len(keywords)]
-            prompt = (
-                f"In the context of {topic}, which statement about {focus} is most accurate?"
-                if index % 3 != 2
-                else f"A student is analysing {focus} while studying {topic}. Which approach is most appropriate?"
+        # Walk every sentence once, in a stable topic-dependent order, so the
+        # requested count is reached whenever the material allows it.
+        candidates = [
+            (topics[index % len(topics)] if topics else subject, sentence)
+            for index, sentence in enumerate(
+                sorted(sentences, key=lambda item: self._stable(f"{'|'.join(topics)}|{item}"))
             )
+        ]
+        for topic, anchor in candidates:
+            if len(questions) >= count:
+                break
+            terms = [term for term in self._keywords(anchor, 6) if term.lower() not in topic.lower()]
+            alternatives = [word for word in vocabulary if word not in anchor.lower()]
+            distractors: list[str] = []
+            for offset, term in enumerate(terms):
+                if len(distractors) == 3 or not alternatives:
+                    break
+                replacement = alternatives[self._stable(f"{anchor}|{term}|{offset}") % len(alternatives)]
+                altered = self._swap_term(anchor, term, replacement)
+                if altered != anchor and altered not in distractors:
+                    distractors.append(altered)
+            if len(distractors) < 3:
+                continue
+            correct_slot = self._stable(f"{anchor}|slot") % 4
+            texts = distractors[:]
+            texts.insert(correct_slot, anchor)
+            option_ids = ["a", "b", "c", "d"]
             questions.append(
                 {
                     "topic": topic,
-                    "question_text": prompt,
+                    "question_text": self._stem(subject, topic, anchor, len(questions)),
                     "question_type": "SINGLE_CHOICE",
                     "difficulty": difficulty,
-                    "bloom_level": "UNDERSTAND",
-                    "options": [
-                        {"id": "a", "text": f"It is governed by the rules and structure described for {topic}."},
-                        {"id": "b", "text": "It applies only to systems that are no longer maintained."},
-                        {"id": "c", "text": "It is unrelated to any topic in the syllabus."},
-                        {"id": "d", "text": "It behaves identically in every possible scenario."},
-                    ],
-                    "correct_answers": ["a"],
-                    "explanation": anchor[:200],
+                    "bloom_level": "REMEMBER" if difficulty == "EASY" else "UNDERSTAND",
+                    "options": [{"id": option_ids[i], "text": text} for i, text in enumerate(texts)],
+                    "correct_answers": [option_ids[correct_slot]],
+                    "explanation": f"The syllabus states: {anchor}",
                     "marks": 1,
                 }
             )

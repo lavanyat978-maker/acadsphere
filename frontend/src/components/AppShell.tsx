@@ -13,6 +13,8 @@ import {
   ScanLine,
   ShieldCheck,
   Sparkles,
+  UserCog,
+  UsersRound,
   X,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
@@ -35,10 +37,17 @@ const NAV = {
   HOD: [
     { to: "/hod", label: "Command centre", icon: LayoutDashboard, end: true },
     { to: "/hod/releases", label: "Release control", icon: ScanLine },
+    { to: "/teacher/exams", label: "Examinations", icon: FileLock2 },
+    { to: "/teacher/practice", label: "Practice studio", icon: BookOpenCheck },
+    { to: "/teacher/syllabus", label: "Syllabus library", icon: Library },
+    { to: "/hod/people", label: "People", icon: UsersRound },
+    { to: "/hod/subjects", label: "Subjects", icon: GraduationCap },
     { to: "/hod/audit", label: "Audit trail", icon: ClipboardList },
     { to: "/hod/security", label: "Security events", icon: ShieldCheck },
   ],
 };
+
+const ACCOUNT_LINK = { to: "/account", label: "Account", icon: UserCog, end: true };
 
 const ROLE_LABEL = {
   STUDENT: "Student workspace",
@@ -59,6 +68,9 @@ const CURRENT_TITLE: Record<string, string> = {
   "/hod/releases": "Release control",
   "/hod/audit": "Audit trail",
   "/hod/security": "Security events",
+  "/hod/people": "People",
+  "/hod/subjects": "Subjects & enrolment",
+  "/account": "Account & security",
 };
 
 export function AppShell() {
@@ -68,7 +80,7 @@ export function AppShell() {
   const [menuOpen, setMenuOpen] = useState(false);
 
   if (!user) return null;
-  const nav = NAV[user.role];
+  const nav = user.must_change_password ? [ACCOUNT_LINK] : [...NAV[user.role], ACCOUNT_LINK];
   const title =
     CURRENT_TITLE[location.pathname] ??
     nav.find((item) => location.pathname.startsWith(item.to) && item.to !== `/${user.role.toLowerCase()}`)
@@ -173,7 +185,7 @@ export function AppShell() {
           <span>
             <Sparkles size={13} /> Praxis v{meta?.version ?? "1.0.0"} · {meta?.encryption.algorithm ?? "AES-256-GCM"}
           </span>
-          <span>Questions never exposed to faculty in plaintext</span>
+          <span>Exam papers stay encrypted until the HOD releases them</span>
         </footer>
       </main>
     </div>

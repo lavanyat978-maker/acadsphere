@@ -7,8 +7,8 @@ from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.deps import get_principal, rate_limit, require_student, require_teacher
-from app.core.deps import Principal
+from app.core.deps import Principal, get_principal, rate_limit
+from app.core.runtime import client_ip
 from app.core.security import create_token
 from app.db.session import get_db
 from app.models.tables import User
@@ -18,6 +18,7 @@ from app.schemas.auth import (
     LoginRequest,
     MfaChallengeResponse,
     MfaConfirmRequest,
+    MfaDisableRequest,
     MfaSetupResponse,
     MfaVerifyRequest,
     PasswordChangeRequest,
@@ -65,7 +66,7 @@ def login(
         db,
         payload.email,
         payload.password,
-        request.client.host if request.client else "unknown",
+        client_ip(request),
         request.headers.get("user-agent", ""),
     )
     if result.get("mfa_required"):
@@ -86,8 +87,24 @@ def verify_mfa(
         db,
         payload.mfa_token,
         payload.code,
-        request.client.host if request.client else "unknown",
+        client_ip(request),
         request.headers.get("user-agent", ""),
+    )
+    _set_session_cookies(response, result["access_token"], result["expires_at"], settings.ACCESS_TOKEN_TTL_MINUTES)
+    return TokenResponse(**result)
+
+
+@router.post("/mfa/enroll", response_model=TokenResponse)
+def enroll_mfa_at_login(
+    payload: MfaVerifyRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+    _: None = Depends(rate_limit("mfa", "RATE_LIMIT_MFA")),
+) -> Any:
+    """First HOD sign-in: confirm the authenticator from the enrolment challenge."""
+    result = auth_service.complete_enrollment_login(
+        db, payload.mfa_token, payload.code, client_ip(request), request.headers.get("user-agent", "")
     )
     _set_session_cookies(response, result["access_token"], result["expires_at"], settings.ACCESS_TOKEN_TTL_MINUTES)
     return TokenResponse(**result)
@@ -165,6 +182,16 @@ def mfa_confirm(
     return auth_service.confirm_mfa_enrollment(db, principal.user, payload.code, principal.ip)
 
 
+@router.post("/mfa/disable")
+def mfa_disable(
+    payload: MfaDisableRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    _: None = Depends(rate_limit("mfa", "RATE_LIMIT_MFA")),
+) -> dict[str, Any]:
+    return auth_service.disable_mfa(db, principal.user, payload.code, principal.ip)
+
+
 @router.post("/mfa/challenge-code", response_model=DemoCodeResponse)
 def mfa_challenge_code(
     payload: DemoCodeRequest,
@@ -174,7 +201,7 @@ def mfa_challenge_code(
 ) -> Any:
     """DEMO_MODE helper: current HOD code for a valid MFA challenge."""
     return auth_service.demo_code_for_challenge(
-        db, payload.mfa_token, request.client.host if request.client else "unknown"
+        db, payload.mfa_token, client_ip(request)
     )
 
 

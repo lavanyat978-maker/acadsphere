@@ -47,22 +47,29 @@ class PaperState(StrEnum):
     DECRYPTED = "DECRYPTED"
     PRINTED = "PRINTED"
     RELEASED = "RELEASED"
+    DISCARDED = "DISCARDED"
 
 
+# A paper that never reached secure storage, or one that was superseded or
+# cancelled before release, is DISCARDED. Discarded papers are terminal: a retry
+# or replacement always creates a new paper version.
 PAPER_TRANSITIONS: dict[PaperState, set[PaperState]] = {
     PaperState.DRAFT: {PaperState.SUBMITTED},
-    PaperState.SUBMITTED: {PaperState.GENERATING},
-    PaperState.GENERATING: {PaperState.VALIDATING, PaperState.SUBMITTED},
-    PaperState.VALIDATING: {PaperState.ASSEMBLED, PaperState.GENERATING},
-    PaperState.ASSEMBLED: {PaperState.VALIDATED, PaperState.GENERATING},
-    PaperState.VALIDATED: {PaperState.LOCKED},
-    PaperState.LOCKED: {PaperState.ENCRYPTED},
-    PaperState.ENCRYPTED: {PaperState.STORED, PaperState.RELEASE_PENDING},
-    PaperState.STORED: {PaperState.RELEASE_PENDING},
-    PaperState.RELEASE_PENDING: {PaperState.DECRYPTED},
+    # SUBMITTED -> LOCKED is the uploaded-paper path: a teacher-prepared PDF
+    # skips generation and validation and is locked as received.
+    PaperState.SUBMITTED: {PaperState.GENERATING, PaperState.LOCKED, PaperState.DISCARDED},
+    PaperState.GENERATING: {PaperState.VALIDATING, PaperState.SUBMITTED, PaperState.DISCARDED},
+    PaperState.VALIDATING: {PaperState.ASSEMBLED, PaperState.GENERATING, PaperState.DISCARDED},
+    PaperState.ASSEMBLED: {PaperState.VALIDATED, PaperState.GENERATING, PaperState.DISCARDED},
+    PaperState.VALIDATED: {PaperState.LOCKED, PaperState.DISCARDED},
+    PaperState.LOCKED: {PaperState.ENCRYPTED, PaperState.DISCARDED},
+    PaperState.ENCRYPTED: {PaperState.STORED, PaperState.RELEASE_PENDING, PaperState.DISCARDED},
+    PaperState.STORED: {PaperState.RELEASE_PENDING, PaperState.DISCARDED},
+    PaperState.RELEASE_PENDING: {PaperState.DECRYPTED, PaperState.DISCARDED},
     PaperState.DECRYPTED: {PaperState.PRINTED},
     PaperState.PRINTED: {PaperState.RELEASED},
     PaperState.RELEASED: set(),
+    PaperState.DISCARDED: set(),
 }
 
 
@@ -100,6 +107,15 @@ class ExamStatus(StrEnum):
     SECURED = "SECURED"
     FAILED = "FAILED"
     RELEASED = "RELEASED"
+    CANCELLED = "CANCELLED"
+
+
+class ExamSource(StrEnum):
+    GENERATED = "GENERATED"
+    UPLOADED = "UPLOADED"
+
+
+PRINT_LIMIT_PER_PAPER = 3
 
 
 class ReleaseStatus(StrEnum):

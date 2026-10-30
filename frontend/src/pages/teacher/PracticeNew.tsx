@@ -21,7 +21,7 @@ export function PracticeNew() {
   const [difficulty, setDifficulty] = useState("MEDIUM");
 
   const subject = useMemo(
-    () => (subjects.data ?? []).find((item) => item.id === subjectId),
+    () => (subjects.data ?? []).find((item) => item.id === subjectId && item.assigned_to_me),
     [subjects.data, subjectId],
   );
 
@@ -88,7 +88,7 @@ export function PracticeNew() {
                   required
                 >
                   <option value="">Select a subject…</option>
-                  {(subjects.data ?? []).map((item) => (
+                  {(subjects.data ?? []).filter((item) => item.assigned_to_me).map((item) => (
                     <option key={item.id} value={item.id}>{item.code} · {item.name}</option>
                   ))}
                 </Select>

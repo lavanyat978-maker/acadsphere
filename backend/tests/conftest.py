@@ -131,6 +131,9 @@ def seeded(client):
             db.add(topic)
             topics.append(topic)
         academic_service.assign_teacher(db, subject.id, users["teacher@test.demo"].id)
+        academic_service.enroll_students(
+            db, subject.id, [users["student@test.demo"].id, users["student2@test.demo"].id]
+        )
         db.commit()
         subject_id = subject.id
         topic_ids = [topic.id for topic in topics]

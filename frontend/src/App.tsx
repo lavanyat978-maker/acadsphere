@@ -1,4 +1,4 @@
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { ToastProvider } from "./context/ToastContext";
@@ -23,6 +23,9 @@ import { HodDashboard } from "./pages/hod/Dashboard";
 import { Releases } from "./pages/hod/Releases";
 import { Audit } from "./pages/hod/Audit";
 import { Security } from "./pages/hod/Security";
+import { People } from "./pages/hod/People";
+import { Subjects } from "./pages/hod/Subjects";
+import { Account } from "./pages/Account";
 import type { Role } from "./lib/types";
 
 function Splash() {
@@ -37,29 +40,38 @@ function Splash() {
   );
 }
 
+const HOME: Record<Role, string> = { HOD: "/hod", TEACHER: "/teacher", STUDENT: "/student" };
+
 function Protected({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
+  const location = useLocation();
   if (loading) return <Splash />;
   if (!user) return <Navigate to="/login" replace />;
-  return <>{children}</>;
-}
-
-function RequireRole({ role, children }: { role: Role; children: ReactNode }) {
-  const { user } = useAuth();
-  if (!user) return <Navigate to="/login" replace />;
-  if (user.role !== role) {
-    const home = user.role === "HOD" ? "/hod" : user.role === "TEACHER" ? "/teacher" : "/student";
-    return <Navigate to={home} replace />;
+  // A temporary password must be replaced before anything else; the API enforces this too.
+  if (user.must_change_password && location.pathname !== "/account") {
+    return <Navigate to="/account" replace />;
   }
   return <>{children}</>;
 }
+
+/** Route guard. The HOD is a superset of a teacher, so staff routes list both roles. */
+function RequireRole({ role, children }: { role: Role | Role[]; children: ReactNode }) {
+  const { user } = useAuth();
+  if (!user) return <Navigate to="/login" replace />;
+  const allowed = Array.isArray(role) ? role : [role];
+  if (!allowed.includes(user.role)) {
+    return <Navigate to={HOME[user.role]} replace />;
+  }
+  return <>{children}</>;
+}
+
+const STAFF: Role[] = ["TEACHER", "HOD"];
 
 function HomeRedirect() {
   const { user, loading } = useAuth();
   if (loading) return <Splash />;
   if (!user) return <Navigate to="/login" replace />;
-  const home = user.role === "HOD" ? "/hod" : user.role === "TEACHER" ? "/teacher" : "/student";
-  return <Navigate to={home} replace />;
+  return <Navigate to={HOME[user.role]} replace />;
 }
 
 function NotFound() {
@@ -97,18 +109,22 @@ export default function App() {
               <Route path="/student/history" element={<RequireRole role="STUDENT"><History /></RequireRole>} />
 
               <Route path="/teacher" element={<RequireRole role="TEACHER"><TeacherDashboard /></RequireRole>} />
-              <Route path="/teacher/practice" element={<RequireRole role="TEACHER"><PracticeStudio /></RequireRole>} />
-              <Route path="/teacher/practice/new" element={<RequireRole role="TEACHER"><PracticeNew /></RequireRole>} />
-              <Route path="/teacher/practice/:testId" element={<RequireRole role="TEACHER"><TeacherPracticeDetail /></RequireRole>} />
-              <Route path="/teacher/exams" element={<RequireRole role="TEACHER"><Exams /></RequireRole>} />
-              <Route path="/teacher/exams/new" element={<RequireRole role="TEACHER"><ExamNew /></RequireRole>} />
-              <Route path="/teacher/exams/:examId" element={<RequireRole role="TEACHER"><ExamDetail /></RequireRole>} />
-              <Route path="/teacher/syllabus" element={<RequireRole role="TEACHER"><Syllabus /></RequireRole>} />
+              <Route path="/teacher/practice" element={<RequireRole role={STAFF}><PracticeStudio /></RequireRole>} />
+              <Route path="/teacher/practice/new" element={<RequireRole role={STAFF}><PracticeNew /></RequireRole>} />
+              <Route path="/teacher/practice/:testId" element={<RequireRole role={STAFF}><TeacherPracticeDetail /></RequireRole>} />
+              <Route path="/teacher/exams" element={<RequireRole role={STAFF}><Exams /></RequireRole>} />
+              <Route path="/teacher/exams/new" element={<RequireRole role={STAFF}><ExamNew /></RequireRole>} />
+              <Route path="/teacher/exams/:examId" element={<RequireRole role={STAFF}><ExamDetail /></RequireRole>} />
+              <Route path="/teacher/exams/:examId/edit" element={<RequireRole role={STAFF}><ExamNew /></RequireRole>} />
+              <Route path="/teacher/syllabus" element={<RequireRole role={STAFF}><Syllabus /></RequireRole>} />
 
               <Route path="/hod" element={<RequireRole role="HOD"><HodDashboard /></RequireRole>} />
               <Route path="/hod/releases" element={<RequireRole role="HOD"><Releases /></RequireRole>} />
               <Route path="/hod/audit" element={<RequireRole role="HOD"><Audit /></RequireRole>} />
               <Route path="/hod/security" element={<RequireRole role="HOD"><Security /></RequireRole>} />
+              <Route path="/hod/people" element={<RequireRole role="HOD"><People /></RequireRole>} />
+              <Route path="/hod/subjects" element={<RequireRole role="HOD"><Subjects /></RequireRole>} />
+              <Route path="/account" element={<Account />} />
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>

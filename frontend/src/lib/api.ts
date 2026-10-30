@@ -17,44 +17,24 @@ function readCookie(name: string): string {
   return match ? decodeURIComponent(match[1]) : "";
 }
 
-// Session token handling.
+// Session handling.
 //
-// The backend sets an HttpOnly cookie, which is the right default: JavaScript
-// cannot read it, so XSS cannot exfiltrate the session. Some embedded preview
-// contexts (an iframe without `allow-same-origin`, a cross-site proxy) refuse
-// to persist cookies at all, and then every authenticated call fails even
-// though login returned 200. In that case we fall back to carrying the token
-// explicitly as `Authorization: Bearer`, which the backend accepts, and which
-// the CSRF middleware exempts because it is not cookie-driven.
-const TOKEN_KEY = "praxis.access_token";
-let memoryToken = "";
+// The session lives only in the HttpOnly `access_token` cookie set by the API,
+// so page JavaScript (and therefore an XSS payload) can never read it. Unsafe
+// requests carry the double-submit CSRF token: the readable `csrf_token`
+// cookie mirrored into the X-CSRF-Token header.
+const UNSAFE = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
-export function setToken(token: string): void {
-  memoryToken = token;
+async function csrfToken(): Promise<string> {
+  const existing = readCookie("csrf_token");
+  if (existing) return existing;
   try {
-    localStorage.setItem(TOKEN_KEY, token);
+    const response = await fetch("/api/auth/csrf", { credentials: "same-origin" });
+    const payload = (await response.json()) as { csrf_token?: string };
+    return readCookie("csrf_token") || payload.csrf_token || "";
   } catch {
-    /* storage unavailable (sandboxed frame): memory token still works */
+    return "";
   }
-}
-
-export function clearToken(): void {
-  memoryToken = "";
-  try {
-    localStorage.removeItem(TOKEN_KEY);
-  } catch {
-    /* ignore */
-  }
-}
-
-export function getToken(): string {
-  if (memoryToken) return memoryToken;
-  try {
-    memoryToken = localStorage.getItem(TOKEN_KEY) ?? "";
-  } catch {
-    memoryToken = "";
-  }
-  return memoryToken;
 }
 
 type RequestOptions = {
@@ -68,11 +48,8 @@ type RequestOptions = {
 export async function api<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const method = options.method ?? "GET";
   const headers: Record<string, string> = { Accept: "application/json" };
-  const token = getToken();
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  } else if (method !== "GET") {
-    headers["X-CSRF-Token"] = readCookie("csrf_token");
+  if (UNSAFE.has(method)) {
+    headers["X-CSRF-Token"] = await csrfToken();
   }
   let body: BodyInit | undefined;
   if (options.form) {
@@ -91,7 +68,6 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
   });
 
   if (response.status === 401 && !path.startsWith("/auth/login") && !path.startsWith("/auth/mfa")) {
-    clearToken();
     window.dispatchEvent(new CustomEvent("praxis:unauthorized"));
   }
 
@@ -101,6 +77,9 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
       payload = await response.json();
     } catch {
       payload = {};
+    }
+    if (response.status === 403 && payload.error === "PASSWORD_CHANGE_REQUIRED") {
+      window.dispatchEvent(new CustomEvent("praxis:password-change-required"));
     }
     throw new ApiError(
       response.status,
@@ -121,11 +100,7 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
 }
 
 export async function downloadPdf(path: string): Promise<void> {
-  const token = getToken();
-  const response = await fetch(`/api${path}`, {
-    credentials: "same-origin",
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
+  const response = await fetch(`/api${path}`, { credentials: "same-origin" });
   if (!response.ok) {
     let message = "Unable to generate the printable copy.";
     try {

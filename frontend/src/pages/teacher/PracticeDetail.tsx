@@ -6,10 +6,13 @@ import {
   BookOpenCheck,
   CheckCircle2,
   Clock3,
+  Eye,
+  Pencil,
   Plus,
   Send,
   Sparkles,
   Target,
+  Trash2,
   Users,
 } from "lucide-react";
 import { api, errorMessage, fieldErrors } from "../../lib/api";
@@ -29,6 +32,10 @@ export function PracticeDetail() {
   const [tab, setTab] = useState<"questions" | "analytics">("questions");
   const [generateOpen, setGenerateOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  // When set, the question modal edits this question instead of adding a new one.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [details, setDetails] = useState({ title: "", description: "", duration_minutes: 30 });
   const [busy, setBusy] = useState(false);
   const [count, setCount] = useState(5);
   const [genDifficulty, setGenDifficulty] = useState("MEDIUM");
@@ -90,6 +97,76 @@ export function PracticeDetail() {
     }
   };
 
+  const deleteQuestion = async (questionId: string) => {
+    if (!window.confirm("Delete this question from the draft?")) return;
+    setBusy(true);
+    try {
+      await api(`/practice/tests/${data.id}/questions/${questionId}`, { method: "DELETE" });
+      toast("Question deleted.", "success");
+      test.reload();
+    } catch (err) {
+      toast(errorMessage(err), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const editable = data.can_edit;
+  const isDraft = data.status === "DRAFT";
+  const untouched = data.attempt_count === 0;
+
+  const openAdd = () => {
+    setEditingId(null);
+    setQuestionText("");
+    setTopicId("");
+    setOptions([
+      { id: "a", text: "" },
+      { id: "b", text: "" },
+      { id: "c", text: "" },
+      { id: "d", text: "" },
+    ]);
+    setCorrect("a");
+    setExplanation("");
+    setMarks(1);
+    setQuestionDifficulty("MEDIUM");
+    setAddOpen(true);
+  };
+
+  const openEdit = (question: (typeof data.questions)[number]) => {
+    setEditingId(question.id);
+    setQuestionText(question.question_text);
+    setTopicId(question.topic_id);
+    const padded = [...question.options];
+    for (const id of ["a", "b", "c", "d"]) {
+      if (padded.length < 4 && !padded.some((option) => option.id === id)) padded.push({ id, text: "" });
+    }
+    setOptions(padded.slice(0, Math.max(4, question.options.length)));
+    setCorrect(question.correct_answers?.[0] ?? padded[0]?.id ?? "a");
+    setExplanation(question.explanation ?? "");
+    setMarks(question.marks);
+    setQuestionDifficulty(question.difficulty);
+    setAddOpen(true);
+  };
+
+  const openDetails = () => {
+    setDetails({ title: data.title, description: data.description, duration_minutes: data.duration_minutes });
+    setDetailsOpen(true);
+  };
+
+  const saveDetails = async () => {
+    setBusy(true);
+    try {
+      await api(`/practice/tests/${data.id}`, { method: "PATCH", body: details });
+      toast("Practice set updated.", "success");
+      setDetailsOpen(false);
+      test.reload();
+    } catch (err) {
+      toast([errorMessage(err), ...fieldErrors(err)].join(" "), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const addQuestion = async () => {
     if (!topicId) return toast("Choose a topic for the question.", "error");
     const payload: PracticeQuestionCreatePayload = {
@@ -105,8 +182,13 @@ export function PracticeDetail() {
     };
     setBusy(true);
     try {
-      await api(`/practice/tests/${data.id}/questions`, { method: "POST", body: [payload] });
-      toast("Question added.", "success");
+      if (editingId) {
+        await api(`/practice/tests/${data.id}/questions/${editingId}`, { method: "PUT", body: payload });
+        toast("Question updated.", "success");
+      } else {
+        await api(`/practice/tests/${data.id}/questions`, { method: "POST", body: [payload] });
+        toast("Question added.", "success");
+      }
       setAddOpen(false);
       setQuestionText("");
       setExplanation("");
@@ -127,25 +209,55 @@ export function PracticeDetail() {
         description={data.description || "No description provided."}
         actions={
           <div className="page-actions-inline">
-            {data.status === "DRAFT" && (
+            {editable && isDraft && (
               <Button variant="secondary" onClick={() => setStatus("PUBLISHED")} loading={busy} icon={<Send size={15} />}>
                 Publish
               </Button>
             )}
-            {data.status === "PUBLISHED" && (
+            {editable && data.status === "PUBLISHED" && untouched && (
+              <Button variant="ghost" onClick={() => setStatus("DRAFT")} loading={busy}>
+                Back to draft
+              </Button>
+            )}
+            {editable && data.status === "PUBLISHED" && (
               <Button variant="ghost" onClick={() => setStatus("ARCHIVED")} loading={busy}>
                 Archive
               </Button>
             )}
-            {data.status === "ARCHIVED" && (
-              <Button variant="secondary" onClick={() => setStatus("DRAFT")} loading={busy}>
+            {editable && data.status === "ARCHIVED" && (
+              <Button variant="secondary" onClick={() => setStatus("PUBLISHED")} loading={busy}>
+                Republish
+              </Button>
+            )}
+            {editable && data.status === "ARCHIVED" && untouched && (
+              <Button variant="ghost" onClick={() => setStatus("DRAFT")} loading={busy}>
                 Reopen draft
+              </Button>
+            )}
+            {editable && (untouched || data.status !== "PUBLISHED") && (
+              <Button variant="ghost" onClick={openDetails} icon={<Pencil size={15} />}>
+                Edit details
               </Button>
             )}
             <Badge tone={statusTone(data.status)}>{titleCase(data.status)}</Badge>
           </div>
         }
       />
+
+      {!editable && (
+        <div className="notice">
+          <Eye size={16} />
+          <span>View only. {data.created_by_name} owns this practice set; only they or the HOD can change it.</span>
+        </div>
+      )}
+      {editable && !isDraft && (
+        <div className="notice">
+          <span>
+            Questions can be changed only while the set is a draft.
+            {untouched ? " Move it back to draft to edit." : " Students have attempted it, so archive it and create a new set to change questions."}
+          </span>
+        </div>
+      )}
 
       <div className="stat-grid stat-grid-tight">
         <Stat label="Questions" value={data.question_count} icon={<BookOpenCheck size={17} />} />
@@ -165,14 +277,14 @@ export function PracticeDetail() {
 
       {tab === "questions" ? (
         <div className="stack">
-          {data.status === "DRAFT" && (
+          {editable && isDraft && (
             <Card className="inline-actions-card">
               <div>
                 <strong>Build the question set</strong>
                 <p>Generate grounded single-choice questions from the syllabus, or add them manually.</p>
               </div>
               <div className="button-row">
-                <Button variant="secondary" icon={<Plus size={15} />} onClick={() => setAddOpen(true)}>Add manually</Button>
+                <Button variant="secondary" icon={<Plus size={15} />} onClick={openAdd}>Add manually</Button>
                 <Button icon={<Sparkles size={15} />} onClick={() => setGenerateOpen(true)}>Generate with AI</Button>
               </div>
             </Card>
@@ -193,6 +305,26 @@ export function PracticeDetail() {
                         <span className="muted">{question.marks} mark{question.marks === 1 ? "" : "s"}</span>
                       </div>
                     </div>
+                    {editable && isDraft && (
+                      <button
+                        className="icon-btn"
+                        aria-label={`Edit question ${index + 1}`}
+                        disabled={busy}
+                        onClick={() => openEdit(question)}
+                      >
+                        <Pencil size={15} />
+                      </button>
+                    )}
+                    {editable && isDraft && (
+                      <button
+                        className="icon-btn danger"
+                        aria-label={`Delete question ${index + 1}`}
+                        disabled={busy}
+                        onClick={() => deleteQuestion(question.id)}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    )}
                   </div>
                   <div className="review-options compact-options">
                     {question.options.map((option) => {
@@ -218,7 +350,11 @@ export function PracticeDetail() {
                 icon={<Sparkles size={22} />}
                 title="No questions yet"
                 description="Generate a set from your uploaded syllabus or write the first question yourself."
-                action={<Button onClick={() => setGenerateOpen(true)} icon={<Sparkles size={15} />}>Generate questions</Button>}
+                action={
+                  editable && isDraft ? (
+                    <Button onClick={() => setGenerateOpen(true)} icon={<Sparkles size={15} />}>Generate questions</Button>
+                  ) : undefined
+                }
               />
             </Card>
           )}
@@ -249,9 +385,9 @@ export function PracticeDetail() {
                 <Card>
                   <div className="card-head"><div><div className="eyebrow">Roster</div><h3>Student outcomes</h3></div></div>
                   <div className="student-list">
-                    {(analytics.data.student_rows as Array<{ student_id: string; student_name: string; student_email: string; best_percentage: number; last_attempt: string }>).map((row) => (
+                    {(analytics.data.student_rows as Array<{ student_id: string; student_name: string; student_email: string; best_percentage: number; last_attempt: string; attempts: number }>).map((row) => (
                       <div className="student-row" key={row.student_id}>
-                        <div><strong>{row.student_name}</strong><span>{row.student_email}</span></div>
+                        <div><strong>{row.student_name}</strong><span>{row.student_email} · {row.attempts} attempt{row.attempts === 1 ? "" : "s"}</span></div>
                         <Badge tone={scoreTone(row.best_percentage)}>{row.best_percentage.toFixed(1)}%</Badge>
                         <span className="muted">{formatDateTime(row.last_attempt)}</span>
                       </div>
@@ -303,15 +439,41 @@ export function PracticeDetail() {
       </Modal>
 
       <Modal
+        open={detailsOpen}
+        onClose={() => setDetailsOpen(false)}
+        title="Edit practice set"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setDetailsOpen(false)}>Cancel</Button>
+            <Button loading={busy} onClick={saveDetails}>Save</Button>
+          </>
+        }
+      >
+        <div className="form-grid">
+          <Field label="Title" className="span-2">
+            <Input value={details.title} onChange={(event) => setDetails({ ...details, title: event.target.value })} minLength={3} maxLength={200} />
+          </Field>
+          <Field label="Description" className="span-2">
+            <Textarea value={details.description} onChange={(event) => setDetails({ ...details, description: event.target.value })} rows={3} />
+          </Field>
+          <Field label="Duration (minutes)">
+            <Input type="number" min={1} max={240} value={details.duration_minutes} onChange={(event) => setDetails({ ...details, duration_minutes: Number(event.target.value) })} />
+          </Field>
+        </div>
+      </Modal>
+
+      <Modal
         open={addOpen}
         onClose={() => setAddOpen(false)}
-        title="Add a question"
+        title={editingId ? "Edit question" : "Add a question"}
         description="Single-choice questions only. Options and the correct answer appear to students after submission."
         width="640px"
         footer={
           <>
             <Button variant="ghost" onClick={() => setAddOpen(false)}>Cancel</Button>
-            <Button loading={busy} onClick={addQuestion} icon={<Plus size={15} />}>Add question</Button>
+            <Button loading={busy} onClick={addQuestion} icon={editingId ? <Pencil size={15} /> : <Plus size={15} />}>
+              {editingId ? "Save question" : "Add question"}
+            </Button>
           </>
         }
       >

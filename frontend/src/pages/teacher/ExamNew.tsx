@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
   CalendarClock,
@@ -8,11 +8,13 @@ import {
   Gauge,
   Plus,
   Scale,
+  Sparkles,
   Trash2,
+  Upload,
 } from "lucide-react";
 import { api, errorMessage, fieldErrors } from "../../lib/api";
 import { useApi } from "../../lib/useApi";
-import type { Exam, Subject } from "../../lib/types";
+import type { Exam, ExamSource, Subject } from "../../lib/types";
 import { Badge, Button, Card, ErrorState, Field, Input, PageHeader, PageLoading, Select, Textarea } from "../../components/ui";
 import { useToast } from "../../context/ToastContext";
 
@@ -25,19 +27,28 @@ interface PatternRow {
 
 const BLOOM_LEVELS = ["REMEMBER", "UNDERSTAND", "APPLY", "ANALYZE", "EVALUATE", "CREATE"];
 
-function localInputValue(offsetDays: number) {
-  const date = new Date(Date.now() + offsetDays * 86400000);
-  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
-  return date.toISOString().slice(0, 16);
+function toLocalInput(date: Date) {
+  const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return shifted.toISOString().slice(0, 16);
 }
 
+function localInputValue(offsetDays: number) {
+  return toLocalInput(new Date(Date.now() + offsetDays * 86400000));
+}
+
+/** Create a new examination, or (with an :examId route param) edit a draft one. */
 export function ExamNew() {
+  const { examId } = useParams();
+  const editing = Boolean(examId);
+  const existing = useApi<Exam>(examId ? `/exams/${examId}` : null);
   const subjects = useApi<Subject[]>("/subjects");
   const navigate = useNavigate();
   const { toast } = useToast();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [source, setSource] = useState<ExamSource>("GENERATED");
+  const [uploadMarks, setUploadMarks] = useState(50);
   const [subjectId, setSubjectId] = useState("");
   const [title, setTitle] = useState("");
   const [examType, setExamType] = useState("Internal Assessment 1");
@@ -62,18 +73,52 @@ export function ExamNew() {
     CREATE: 0,
   });
 
-  const subject = useMemo(
-    () => (subjects.data ?? []).find((item) => item.id === subjectId),
-    [subjects.data, subjectId],
-  );
+  const [prefilled, setPrefilled] = useState(false);
+  useEffect(() => {
+    const exam = existing.data;
+    if (!exam || prefilled) return;
+    setPrefilled(true);
+    setSource(exam.source);
+    setSubjectId(exam.subject_id);
+    setTitle(exam.title);
+    setExamType(exam.exam_type);
+    setExamDate(toLocalInput(new Date(exam.exam_date)));
+    setDuration(exam.duration_minutes);
+    setVenue(exam.venue);
+    setInstructions(exam.instructions);
+    setUploadMarks(exam.total_marks);
+    const config = exam.configuration;
+    if (config) {
+      setRetryLimit(config.retry_limit);
+      if (config.pattern.length) setPattern(config.pattern);
+      if (Object.keys(config.difficulty_distribution).length) setDifficulty(config.difficulty_distribution);
+      if (Object.keys(config.bloom_distribution).length) {
+        setBloom({ REMEMBER: 0, UNDERSTAND: 0, APPLY: 0, ANALYZE: 0, EVALUATE: 0, CREATE: 0, ...config.bloom_distribution });
+      }
+    }
+    const topics = exam.topics as Array<{ id: string; weight_percent: number }>;
+    setSelectedTopics(topics.map((topic) => topic.id));
+    setWeights(Object.fromEntries(topics.map((topic) => [topic.id, topic.weight_percent])));
+  }, [existing.data, prefilled]);
+
+  // Only subjects the caller works in (every subject for the HOD).
+  const mySubjects = useMemo(() => (subjects.data ?? []).filter((item) => item.assigned_to_me), [subjects.data]);
+  const subject = useMemo(() => mySubjects.find((item) => item.id === subjectId), [mySubjects, subjectId]);
+  const uploaded = source === "UPLOADED";
   const totalMarks = pattern.reduce((sum, row) => sum + row.marks * row.count, 0);
   const questionCount = pattern.reduce((sum, row) => sum + row.count, 0);
   const topicSum = selectedTopics.reduce((sum, id) => sum + (weights[id] ?? 0), 0);
   const difficultySum = Object.values(difficulty).reduce((sum, value) => sum + value, 0);
   const bloomSum = Object.values(bloom).reduce((sum, value) => sum + value, 0);
 
-  if (subjects.loading && !subjects.data) return <PageLoading label="Loading subjects" />;
+  if ((subjects.loading && !subjects.data) || (editing && !prefilled && !existing.error)) {
+    return <PageLoading label={editing ? "Loading examination" : "Loading subjects"} />;
+  }
   if (subjects.error) return <ErrorState message={subjects.error} onRetry={subjects.reload} />;
+  if (existing.error) return <ErrorState message={existing.error} onRetry={existing.reload} />;
+  if (editing && existing.data && (existing.data.status !== "DRAFT" || !existing.data.can_edit)) {
+    return <ErrorState message="Only the owner (or the HOD) can edit an examination, and only while it is a draft." />;
+  }
 
   const toggleTopic = (topicId: string) => {
     setSelectedTopics((current) => {
@@ -111,6 +156,13 @@ export function ExamNew() {
     if (!subjectId) return "Select a subject.";
     if (title.trim().length < 3) return "Provide an examination title.";
     if (!examDate) return "Choose the examination date and time.";
+    if (uploaded) {
+      if (uploadMarks < 5 || uploadMarks > 200) return "Total marks must be between 5 and 200.";
+      if (new Date(examDate).getTime() - Date.now() < 24 * 3600 * 1000) {
+        return "Uploaded papers must be in place before the release window opens, 24 hours before the exam. Pick a later date.";
+      }
+      return null;
+    }
     if (pattern.length === 0) return "Add at least one question group.";
     if (questionCount > 30) return "A paper may not exceed 30 questions.";
     if (selectedTopics.length === 0) return "Select at least one topic.";
@@ -134,9 +186,20 @@ export function ExamNew() {
     setBusy(true);
     setError(null);
     try {
-      const exam = await api<Exam>("/exams", {
-        method: "POST",
-        body: {
+      const details = {
+        source,
+        subject_id: subjectId,
+        title: title.trim(),
+        exam_type: examType,
+        exam_date: new Date(examDate).toISOString(),
+        duration_minutes: duration,
+        venue,
+        instructions,
+      };
+      const exam = await api<Exam>(editing ? `/exams/${examId}` : "/exams", {
+        method: editing ? "PUT" : "POST",
+        body: uploaded ? { ...details, total_marks: uploadMarks } : {
+          source,
           subject_id: subjectId,
           title: title.trim(),
           exam_type: examType,
@@ -152,7 +215,12 @@ export function ExamNew() {
           retry_limit: retryLimit,
         },
       });
-      toast("Examination configuration saved as draft.", "success");
+      toast(
+        editing
+          ? "Draft examination updated."
+          : uploaded ? "Examination created. Upload the question paper next." : "Examination configuration saved as draft.",
+        "success",
+      );
       navigate(`/teacher/exams/${exam.id}`);
     } catch (err) {
       setError([errorMessage(err), ...fieldErrors(err)].join(" "));
@@ -162,15 +230,42 @@ export function ExamNew() {
 
   return (
     <div className="stack">
-      <Link to="/teacher/exams" className="back-link"><ArrowLeft size={15} /> Examinations</Link>
+      <Link to={editing ? `/teacher/exams/${examId}` : "/teacher/exams"} className="back-link"><ArrowLeft size={15} /> {editing ? "Back to examination" : "Examinations"}</Link>
       <PageHeader
-        eyebrow="New examination"
-        title="Configure the blueprint"
-        description="Everything here is frozen when you submit. Generation cannot change marks, topics or distributions."
+        eyebrow={editing ? "Edit draft examination" : "New examination"}
+        title={editing ? existing.data?.title ?? "Edit examination" : uploaded ? "Set up an uploaded-paper exam" : "Configure the blueprint"}
+        description={
+          uploaded
+            ? "You will upload a finished PDF on the next screen. It is encrypted on receipt and only the HOD can open it, inside the release window."
+            : "Everything here is frozen when you submit. Generation cannot change marks, topics or distributions."
+        }
       />
 
       <form onSubmit={submit} className="form-layout">
         <div className="stack">
+          {!editing && <Card className="form-card">
+            <div className="form-section-head">
+              <FileLock2 size={18} />
+              <div><h3>How is the paper produced?</h3><p>This choice is fixed once the examination is created.</p></div>
+            </div>
+            <div className="source-choice">
+              <button type="button" className={`source-option ${!uploaded ? "active" : ""}`} onClick={() => setSource("GENERATED")}>
+                <Sparkles size={20} />
+                <div>
+                  <strong>Generate with AI</strong>
+                  <span>Questions are generated from the syllabus library, validated in five levels and sealed. Nobody, including you, reads the paper before release.</span>
+                </div>
+              </button>
+              <button type="button" className={`source-option ${uploaded ? "active" : ""}`} onClick={() => setSource("UPLOADED")}>
+                <Upload size={20} />
+                <div>
+                  <strong>Upload my paper</strong>
+                  <span>Upload a finished PDF. It is encrypted immediately and printed by the HOD under the same controls. You can replace it until 24 hours before the exam.</span>
+                </div>
+              </button>
+            </div>
+          </Card>}
+
           <Card className="form-card">
             <div className="form-section-head">
               <CalendarClock size={18} />
@@ -178,9 +273,9 @@ export function ExamNew() {
             </div>
             <div className="form-grid">
               <Field label="Subject">
-                <Select value={subjectId} onChange={(event) => { setSubjectId(event.target.value); setSelectedTopics([]); setWeights({}); }} required>
+                <Select value={subjectId} disabled={editing} onChange={(event) => { setSubjectId(event.target.value); setSelectedTopics([]); setWeights({}); }} required>
                   <option value="">Select subject…</option>
-                  {(subjects.data ?? []).map((item) => <option key={item.id} value={item.id}>{item.code} · {item.name}</option>)}
+                  {mySubjects.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.name}</option>)}
                 </Select>
               </Field>
               <Field label="Examination title">
@@ -203,12 +298,21 @@ export function ExamNew() {
               <Field label="Venue">
                 <Input value={venue} onChange={(event) => setVenue(event.target.value)} maxLength={160} />
               </Field>
+              {uploaded && (
+                <Field label="Total marks">
+                  <Input type="number" min={5} max={200} value={uploadMarks} onChange={(event) => setUploadMarks(Number(event.target.value))} />
+                </Field>
+              )}
               <Field label="Instructions" className="span-2">
                 <Textarea value={instructions} onChange={(event) => setInstructions(event.target.value)} rows={2} maxLength={3000} />
               </Field>
             </div>
+            {mySubjects.length === 0 && (
+              <p className="field-hint warning-text">You are not assigned to any subject yet. Ask the HOD to assign you.</p>
+            )}
           </Card>
 
+          {!uploaded && (<>
           <Card className="form-card">
             <div className="form-section-head">
               <FileLock2 size={18} />
@@ -332,12 +436,15 @@ export function ExamNew() {
             </div>
             <Input type="number" min={1} max={6} value={retryLimit} onChange={(event) => setRetryLimit(Number(event.target.value))} className="narrow-input" />
           </Card>
+          </>)}
 
           {error && <div className="form-error">{error}</div>}
 
           <div className="form-actions">
-            <Link to="/teacher/exams"><Button type="button" variant="ghost">Cancel</Button></Link>
-            <Button type="submit" loading={busy} icon={<FileLock2 size={16} />}>Save draft configuration</Button>
+            <Link to={editing ? `/teacher/exams/${examId}` : "/teacher/exams"}><Button type="button" variant="ghost">Cancel</Button></Link>
+            <Button type="submit" loading={busy} icon={<FileLock2 size={16} />}>
+              {editing ? "Save changes" : uploaded ? "Create and continue to upload" : "Save draft configuration"}
+            </Button>
           </div>
         </div>
 
@@ -347,14 +454,19 @@ export function ExamNew() {
             <h3>{title || "Untitled examination"}</h3>
             <p>{subject ? `${subject.code} · ${subject.name}` : "No subject selected"}</p>
             <div className="summary-rows">
-              <div><span>Total marks</span><strong>{totalMarks}</strong></div>
-              <div><span>Questions</span><strong>{questionCount}</strong></div>
-              <div><span>Topics</span><strong>{selectedTopics.length}</strong></div>
+              <div><span>Paper</span><strong>{uploaded ? "Uploaded PDF" : "AI generated"}</strong></div>
+              <div><span>Total marks</span><strong>{uploaded ? uploadMarks : totalMarks}</strong></div>
+              {!uploaded && <div><span>Questions</span><strong>{questionCount}</strong></div>}
+              {!uploaded && <div><span>Topics</span><strong>{selectedTopics.length}</strong></div>}
               <div><span>Duration</span><strong>{duration} min</strong></div>
             </div>
             <div className="side-note">
               <FileLock2 size={15} />
-              <span>Submitting freezes this blueprint with a SHA-256 hash. Any later change requires a new examination.</span>
+              <span>
+                {uploaded
+                  ? "The PDF is encrypted with AES-256-GCM on upload. Other teachers cannot open it; the HOD prints at most three stamped copies."
+                  : "Submitting freezes this blueprint with a SHA-256 hash. Any later change requires a new examination."}
+              </span>
             </div>
           </Card>
         </aside>
