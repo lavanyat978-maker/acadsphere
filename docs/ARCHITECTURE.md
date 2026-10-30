@@ -9,7 +9,8 @@ the only way to read it afterwards is through an auditable, time-boxed release.*
 
 ```
 app/api/routers/      HTTP: authentication, request parsing, role guards, response shapes
-app/services/         Transactions and business rules (one module per bounded area)
+app/services/         Transactions and business rules (one module per bounded area);
+                      access.py is the single source of role/subject/ownership rules
 app/validation/       5-level question quality gate
 app/rag/              Document extraction → chunking → embedding → retrieval
 app/ai/               LLM provider abstraction, prompts, embedder selection
@@ -21,13 +22,16 @@ app/core/             Settings, security primitives, errors, middleware, demo fi
 ```
 
 Routers never talk to the database directly: they resolve the caller, enforce the role,
-and delegate to a service. Services own commits and audit records, which is what makes
+and delegate to a service. Services ask `app/services/access.py` whether the caller may
+view or change a subject, exam or practice test (HOD: everything; teacher: view within
+assigned subjects, change only own items; student: enrolled subjects only). Services own commits and audit records, which is what makes
 "every mutation is audited" enforceable rather than aspirational.
 
 ## Data model
 
 ```
 users ──< subject_teachers >── subjects ──< topics
+  ├──< student_subjects >──────────┘
   │                              │           │
   │                              │           └──< exam_topics / practice_test_topics
   │                              └──< syllabus_documents ──< document_chunks (embeddings)
@@ -58,8 +62,11 @@ only inside `encrypted_papers` (ciphertext blob reference), never in the paper r
 
 A practice test declares subjects, topics, difficulty mix and question count. Questions
 are produced by the same generator but bypass the sealing path: they are meant to be
-seen. An attempt is created with a server-side timer; answers are autosaved; submission
-grades answers, computes topic-level mastery and writes a result. Teachers see aggregate
+seen. An attempt is created with a server-side timer; answers are autosaved
+(`PUT /practice/attempts/{id}/answers`) and restored on reload; submission grades
+answers, computes topic-level mastery and writes a result. A submission arriving after
+the deadline (plus 30 s grace) is ignored and the autosaved answers are graded instead;
+overdue attempts are closed the same way when anyone next reads them. Teachers see aggregate
 analytics per test, never per-student answer text for a test the student has not
 submitted.
 
@@ -95,10 +102,28 @@ Issue messages deliberately never include question text, so a teacher can see *w
 candidate failed without seeing the candidate. That keeps generation telemetry usable
 in the same UI that must not leak paper content.
 
+## Uploaded papers
+
+An exam created with `source=UPLOADED` skips generation. The teacher uploads a PDF to
+`POST /exams/{id}/paper`; it is checked (`%PDF-` header, parses, has pages, not password
+protected, size limit), the configuration is frozen, and a new paper version goes
+`DRAFT → SUBMITTED → LOCKED → ENCRYPTED → STORED` with the PDF bytes as the encrypted body.
+Until the release window opens the teacher may upload again: the previous version is
+`DISCARDED` and its ciphertext deleted. At print time the HOD gets the original PDF with
+a "Controlled copy n/3" stamp on every page.
+
 ## Paper lifecycle
 
-`DRAFT → SUBMITTED → GENERATING → VALIDATING → ASSEMBLED → VALIDATED → LOCKED →
+Generated: `DRAFT → SUBMITTED → GENERATING → VALIDATING → ASSEMBLED → VALIDATED → LOCKED →
 ENCRYPTED → STORED → RELEASE_PENDING → DECRYPTED → PRINTED → RELEASED`
+
+Uploaded: `DRAFT → SUBMITTED → LOCKED → ENCRYPTED → STORED → …` (same release states)
+
+Any state before `DECRYPTED` may move to the terminal `DISCARDED` (failed generation,
+replaced upload, cancelled exam). Every failure path in `generation_service.mark_failed`
+discards the half-built paper and scrubs candidate plaintext, so a retry always starts a
+fresh paper version and an exam is never stuck mid-pipeline. Requests orphaned by a
+restart are failed at startup.
 
 The transition table in `app/models/enums.py` is the only legal path; `transition()`
 refuses anything else, writes an `ILLEGAL_STATE_TRANSITION_BLOCKED` audit record and
@@ -118,7 +143,8 @@ HOD opens /api/exams/release/queue
   → exam window check (opens PRINT_EARLY_OPEN_MINUTES before, closes RELEASE_WINDOW_MINUTES after)
   → POST /release/{paper_id}/authorize  → single-use release token (TTL 10 min), audited
   → POST /release/{paper_id}/decrypt    → token + window validated, paper DECRYPTED, payload returned once
-  → GET  /release/{paper_id}/pdf        → controlled print, max 3 copies, each audited
+  → GET  /release/{paper_id}/pdf        → controlled print, max 3 copies per paper (all
+                                          authorisations combined), each audited
   → POST /release/{paper_id}/released   → paper RELEASED, release closed
 ```
 
@@ -129,8 +155,10 @@ role inside one window.
 
 ## Frontend
 
-A role-aware SPA: `/student/*`, `/teacher/*`, `/hod/*` route trees guarded by the session
-role. The API client always sends credentials and mirrors the CSRF cookie into the
-`X-CSRF-Token` header. Charts are hand-rolled SVG (no chart dependency), and the design
+A role-aware SPA: `/student/*`, `/teacher/*` (teacher and HOD) and `/hod/*` route trees
+guarded by the session role, plus `/account` for everyone. A user holding a temporary
+password is held on `/account` until they change it. The session is cookie-only; the API
+client mirrors the CSRF cookie into the `X-CSRF-Token` header and fetches one when it is
+missing. Charts are hand-rolled SVG (no chart dependency), and the design
 system in `src/styles.css` uses a single token set so the three role experiences stay
 visually consistent.

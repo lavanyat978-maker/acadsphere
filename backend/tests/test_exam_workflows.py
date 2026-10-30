@@ -322,3 +322,23 @@ def test_integrity_check_is_audited(client: TestClient, tokens, secured_paper):
 
 def test_exam_status_enum_includes_cancelled():
     assert ExamStatus.CANCELLED == "CANCELLED"
+
+
+def test_generation_requires_syllabus_material(client: TestClient, tokens):
+    from app.models.tables import Subject, Topic
+
+    with session_scope() as db:
+        subject = Subject(code="EMPTY1", name="No Material Subject", description="")
+        db.add(subject)
+        db.flush()
+        topics = [Topic(subject_id=subject.id, name=f"Topic {i}", unit="Unit 1") for i in range(4)]
+        db.add_all(topics)
+        db.flush()
+        subject_id, topic_ids = subject.id, [topic.id for topic in topics]
+    payload = exam_payload(subject_id, topic_ids)
+    response = client.post("/api/exams", headers=tokens["hod"], json=payload)
+    assert response.status_code == 201, response.text
+    exam_id = response.json()["id"]
+    client.post(f"/api/exams/{exam_id}/submit", headers=tokens["hod"])
+    blocked = client.post(f"/api/exams/{exam_id}/generate", headers=tokens["hod"])
+    assert blocked.status_code == 409 and blocked.json()["error"] == "NO_SYLLABUS"

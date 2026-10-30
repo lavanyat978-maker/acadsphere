@@ -79,10 +79,13 @@ def install_error_handlers(app: FastAPI) -> None:
     async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
         if exc.status_code >= 500:
             logger.exception("application error", extra={"path": request.url.path})
+        headers = {"Cache-Control": "no-store"}
+        if isinstance(exc, RateLimited) and isinstance(exc.details, dict):
+            headers["Retry-After"] = str(exc.details.get("retry_after_seconds", 60))
         return JSONResponse(
             status_code=exc.status_code,
             content=_body(exc.code, exc.message, exc.details),
-            headers={"Cache-Control": "no-store"},
+            headers=headers,
         )
 
     @app.exception_handler(RequestValidationError)
