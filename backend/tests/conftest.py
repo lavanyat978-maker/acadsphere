@@ -14,7 +14,8 @@ os.environ.update(
         "SEED_ON_STARTUP": "false",
         "JWT_SECRET": "test-secret-value-that-is-long-enough-123456",
         "MASTER_KEY_ID": "test-key-1",
-        "DATABASE_URL": f"sqlite:///{TEST_DIR / 'test.db'}",
+        # Set TEST_DATABASE_URL to an empty PostgreSQL database to run the suite there.
+        "DATABASE_URL": os.environ.get("TEST_DATABASE_URL") or f"sqlite:///{TEST_DIR / 'test.db'}",
         "STORAGE_BACKEND": "local",
         "STORAGE_LOCAL_PATH": str(TEST_DIR / "storage"),
         "GEN_INLINE": "false",

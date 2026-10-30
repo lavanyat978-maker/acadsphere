@@ -83,6 +83,13 @@ def record_audit(
     metadata: dict[str, Any] | None = None,
     commit: bool = False,
 ) -> AuditLog:
+    # Bound every column to its schema size. PostgreSQL rejects overlong values
+    # (SQLite silently stores them), and a failed audit write must never turn a
+    # denial into a 500. The hashed payload uses the same bounded values.
+    event = event[:80]
+    resource_type = (resource_type or "")[:60]
+    resource_id = (resource_id or "")[:60]
+    ip = (ip or "")[:64]
     last = db.execute(select(AuditLog).order_by(AuditLog.seq.desc()).limit(1)).scalar_one_or_none()
     prev_hash = last.record_hash if last else "GENESIS"
     created_at = datetime.now(timezone.utc)
@@ -130,11 +137,11 @@ def record_security_event(
     detail: dict[str, Any] | None = None,
 ) -> SecurityEvent:
     event = SecurityEvent(
-        event_type=event_type,
+        event_type=event_type[:80],
         severity=str(severity),
         summary=summary[:255],
         actor_id=actor_id,
-        ip_address=ip,
+        ip_address=(ip or "")[:64],
         detail=_sanitize(detail or {}),
     )
     db.add(event)
