@@ -253,6 +253,13 @@ def queue_generation(db: Session, actor: User, exam_id: str, ip: str = "") -> Ge
     ).first()
     if active:
         raise Conflict("A generation request is already in progress.", "GENERATION_IN_PROGRESS")
+    from app.rag.pipeline import subject_has_documents
+
+    if not subject_has_documents(db, exam.subject_id):
+        raise Conflict(
+            "Upload syllabus material for this subject first; questions are generated only from it.",
+            "NO_SYLLABUS",
+        )
     if settings.effective_llm_provider == "mock" and not settings.DEMO_MODE:
         raise Conflict(
             "No real AI provider is configured. Set LLM_API_KEY or enable DEMO_MODE.",
