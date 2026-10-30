@@ -85,10 +85,7 @@ class S3Storage(StorageBackend):
             import boto3  # type: ignore
             from botocore.config import Config  # type: ignore
         except ImportError as exc:  # pragma: no cover - optional dep
-            raise StorageError(
-                "S3 storage selected but boto3 is not installed. "
-                "Install it with `pip install 'praxis-backend[s3]'`."
-            ) from exc
+            raise StorageError("S3 storage selected but boto3 is not installed.") from exc
         if not settings.S3_BUCKET:
             raise StorageError("S3_BUCKET must be configured when STORAGE_BACKEND=s3")
         self._bucket = settings.S3_BUCKET
@@ -98,7 +95,11 @@ class S3Storage(StorageBackend):
             endpoint_url=settings.S3_ENDPOINT_URL or None,
             aws_access_key_id=settings.S3_ACCESS_KEY_ID or None,
             aws_secret_access_key=settings.S3_SECRET_ACCESS_KEY or None,
-            config=Config(signature_version="s3v4", retries={"max_attempts": 4}),
+            config=Config(
+                signature_version="s3v4",
+                retries={"max_attempts": 4},
+                s3={"addressing_style": "path"} if settings.S3_ENDPOINT_URL else {},
+            ),
         )
 
     def _key(self, key: str) -> str:
@@ -106,13 +107,16 @@ class S3Storage(StorageBackend):
         return f"{prefix}/{key}" if prefix else key
 
     def put(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
+        extra: dict[str, str] = {}
+        if settings.S3_SERVER_SIDE_ENCRYPTION:
+            extra["ServerSideEncryption"] = settings.S3_SERVER_SIDE_ENCRYPTION
         self._client.put_object(
             Bucket=self._bucket,
             Key=self._key(key),
             Body=data,
             ContentType=content_type,
-            ServerSideEncryption="AES256",
             Metadata={"platform": "praxis"},
+            **extra,
         )
         return key
 

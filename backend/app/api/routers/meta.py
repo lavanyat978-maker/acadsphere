@@ -29,6 +29,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, Any]:
         "status": status,
         "app": settings.APP_NAME,
         "version": settings.APP_VERSION,
+        "revision": settings.GIT_SHA,
         "env": settings.ENV,
         "database": database,
         "ai_mode": settings.ai_mode,

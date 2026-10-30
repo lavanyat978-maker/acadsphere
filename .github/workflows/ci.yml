@@ -1,9 +1,12 @@
 name: CI
 
+# main is built, tested and deployed by deploy.yml (which calls this workflow),
+# so it is not listed under push: here, to avoid running the tests twice.
 on:
   push:
-    branches: [main, master]
+    branches: [master]
   pull_request:
+  workflow_call:
 
 jobs:
   backend:

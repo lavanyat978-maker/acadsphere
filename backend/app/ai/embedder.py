@@ -72,12 +72,15 @@ class OpenAIEmbedder(EmbeddingProvider):
         self.base_url = settings.LLM_BASE_URL.rstrip("/")
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        payload: dict = {"model": self.model, "input": texts}
+        if settings.EMBEDDING_API_DIMENSIONS:
+            payload["dimensions"] = settings.EMBEDDING_API_DIMENSIONS
         try:
             with httpx.Client(timeout=45) as client:
                 response = client.post(
                     f"{self.base_url}/embeddings",
                     headers={"Authorization": f"Bearer {settings.LLM_API_KEY}"},
-                    json={"model": self.model, "input": texts},
+                    json=payload,
                 )
                 response.raise_for_status()
                 data = response.json()["data"]
