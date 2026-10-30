@@ -14,9 +14,12 @@ import { Badge, Card, ErrorState, PageHeader, PageLoading, Progress, Stat } from
 import { ScoreRing, TopicBars } from "../../components/charts";
 import { formatDateTime, scoreTone, titleCase } from "../../lib/format";
 
-export function Result() {
-  const { attemptId = "" } = useParams();
-  const result = useApi<PracticeResult>(`/practice/attempts/${attemptId}/result`);
+/** A practice result. `staff` shows any student's attempt to a teacher or the HOD. */
+export function Result({ staff = false }: { staff?: boolean }) {
+  const { attemptId = "", testId = "" } = useParams();
+  const result = useApi<PracticeResult>(
+    staff ? `/practice/staff/attempts/${attemptId}/result` : `/practice/attempts/${attemptId}/result`,
+  );
 
   if (result.loading && !result.data) return <PageLoading label="Scoring your attempt" />;
   if (result.error) return <ErrorState message={result.error} onRetry={result.reload} />;
@@ -34,15 +37,15 @@ export function Result() {
 
   return (
     <div className="stack">
-      <Link to="/student/practice" className="back-link">
-        <ArrowLeft size={15} /> Practice library
+      <Link to={staff ? `/teacher/practice/${testId}` : "/student/practice"} className="back-link">
+        <ArrowLeft size={15} /> {staff ? "Back to practice set" : "Practice library"}
       </Link>
       <PageHeader
-        eyebrow="Attempt result"
+        eyebrow={staff ? `Attempt by ${data.student_name ?? "student"}` : "Attempt result"}
         title={data.test_title}
-        description={`${data.subject_name} · submitted ${formatDateTime(data.created_at)}`}
+        description={`${data.subject_name} · submitted ${formatDateTime(data.created_at)}${data.auto_submitted ? " · auto-submitted at the deadline" : ""}`}
         actions={
-          <div className="page-actions-inline">
+          staff ? undefined : <div className="page-actions-inline">
             <Link to={`/student/practice/${data.test_id}`}>
               <Badge tone="neutral"><RefreshCw size={12} /> Retry set</Badge>
             </Link>

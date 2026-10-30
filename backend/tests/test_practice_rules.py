@@ -183,3 +183,16 @@ def test_teacher_analytics_aggregates_attempts_per_student(client: TestClient, t
     for row in analytics["student_rows"]:
         assert row["attempts"] >= 1
         assert 0 <= row["best_percentage"] <= 100
+
+
+def test_hod_student_analytics_and_staff_result_review(client: TestClient, tokens, seeded):
+    hod_view = client.get(f"/api/analytics/student/{seeded['student_id']}", headers=tokens["hod"])
+    assert hod_view.status_code == 200 and hod_view.json()["student"]["email"] == "student@test.demo"
+    assert client.get(f"/api/analytics/student/{seeded['teacher_id']}", headers=tokens["hod"]).status_code == 404
+    assert client.get(f"/api/analytics/student/{seeded['student_id']}", headers=tokens["teacher"]).status_code == 403
+    assert client.get(f"/api/analytics/student/{seeded['student_id']}", headers=tokens["student2"]).status_code == 403
+
+    analytics = client.get(f"/api/practice/tests/{seeded['test_id']}/analytics", headers=tokens["teacher"]).json()
+    row = analytics["student_rows"][0]
+    review = client.get(f"/api/practice/staff/attempts/{row['last_attempt_id']}/result", headers=tokens["teacher"])
+    assert review.status_code == 200 and review.json()["student_name"] == row["student_name"]

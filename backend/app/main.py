@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.core.errors import install_error_handlers
 from app.core.runtime import (
     CSRFMiddleware,
+    GeneralRateLimitMiddleware,
     RequestLogMiddleware,
     SecurityHeadersMiddleware,
     configure_logging,
@@ -62,6 +63,7 @@ app = FastAPI(
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestLogMiddleware)
 app.add_middleware(CSRFMiddleware)
+app.add_middleware(GeneralRateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,

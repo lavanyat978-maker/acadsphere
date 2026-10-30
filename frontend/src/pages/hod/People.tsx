@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react";
-import { Check, Copy, Download, FileUp, KeyRound, Lock, Plus, Search, ShieldOff, UserCheck, UserX } from "lucide-react";
+import { BarChart3, Check, Copy, Download, FileUp, KeyRound, Lock, Plus, Search, ShieldOff, UserCheck, UserX } from "lucide-react";
+import { Link } from "react-router-dom";
 import { ApiError } from "../../lib/api";
 import { useAuth } from "../../context/AuthContext";
 import { useToast } from "../../context/ToastContext";
@@ -347,6 +348,16 @@ export function People() {
                     <td>
                       {row.id !== me?.id && (
                         <div className="row-actions">
+                          {row.role === "STUDENT" && (
+                            <Link
+                              className="icon-btn"
+                              title="Learning analytics"
+                              aria-label={`Analytics for ${row.full_name}`}
+                              to={`/hod/people/${row.id}/analytics`}
+                            >
+                              <BarChart3 size={15} />
+                            </Link>
+                          )}
                           <button
                             className="icon-btn"
                             title="Reset password"

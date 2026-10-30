@@ -385,12 +385,12 @@ export function PracticeDetail() {
                 <Card>
                   <div className="card-head"><div><div className="eyebrow">Roster</div><h3>Student outcomes</h3></div></div>
                   <div className="student-list">
-                    {(analytics.data.student_rows as Array<{ student_id: string; student_name: string; student_email: string; best_percentage: number; last_attempt: string; attempts: number }>).map((row) => (
-                      <div className="student-row" key={row.student_id}>
+                    {(analytics.data.student_rows as Array<{ student_id: string; student_name: string; student_email: string; best_percentage: number; last_attempt: string; attempts: number; last_attempt_id: string }>).map((row) => (
+                      <Link className="student-row student-row-link" key={row.student_id} to={`/teacher/practice/${data.id}/attempts/${row.last_attempt_id}`}>
                         <div><strong>{row.student_name}</strong><span>{row.student_email} · {row.attempts} attempt{row.attempts === 1 ? "" : "s"}</span></div>
                         <Badge tone={scoreTone(row.best_percentage)}>{row.best_percentage.toFixed(1)}%</Badge>
-                        <span className="muted">{formatDateTime(row.last_attempt)}</span>
-                      </div>
+                        <span className="muted">{formatDateTime(row.last_attempt)} · review latest</span>
+                      </Link>
                     ))}
                   </div>
                 </Card>

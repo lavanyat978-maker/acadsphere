@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
-from app.core.deps import Principal, require_staff, require_student
+from app.core.deps import Principal, require_staff, require_student, rate_limit
 from app.db.session import get_db
 from app.schemas.practice import (
     AttemptAutosave,
@@ -146,6 +146,7 @@ def generate_questions(
     payload: GeneratePracticeQuestionsRequest,
     principal: Principal = Depends(require_staff),
     db: Session = Depends(get_db),
+    _: None = Depends(rate_limit("generation", "RATE_LIMIT_GENERATION")),
 ) -> dict[str, Any]:
     result = practice_service.generate_questions(db, principal.user, test_id, payload)
     db.commit()

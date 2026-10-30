@@ -155,6 +155,22 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class GeneralRateLimitMiddleware(BaseHTTPMiddleware):
+    """Per-client budget for the whole API (RATE_LIMIT_GENERAL requests/minute)."""
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        path = request.url.path
+        if path.startswith(settings.API_PREFIX) and path != f"{settings.API_PREFIX}/health":
+            ok, retry = rate_limiter.hit(f"general:{client_ip(request)}", settings.RATE_LIMIT_GENERAL, 60)
+            if not ok:
+                return JSONResponse(
+                    status_code=429,
+                    content={"error": "RATE_LIMITED", "message": "Too many requests. Please slow down and try again."},
+                    headers={"Retry-After": str(retry), "Cache-Control": "no-store"},
+                )
+        return await call_next(request)
+
+
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 CSRF_EXEMPT_PATHS = {
     f"{settings.API_PREFIX}/auth/login",

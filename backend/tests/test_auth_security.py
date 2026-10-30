@@ -131,3 +131,23 @@ def test_password_change_revokes_old_sessions(client: TestClient):
     current = fresh.get("/api/auth/me")
     assert current.status_code == 200
     assert current.json()["email"] == "password@test.demo"
+
+
+def test_generation_and_general_rate_limits_apply(client: TestClient, tokens, seeded, monkeypatch):
+    from app.core.config import settings
+    from app.core.runtime import rate_limiter
+
+    rate_limiter.reset()
+    monkeypatch.setattr(settings, "RATE_LIMIT_GENERATION", 2)
+    url = f"/api/practice/tests/{seeded['test_id']}/generate"
+    statuses = [client.post(url, headers=tokens["teacher"], json={"count": 1}).status_code for _ in range(3)]
+    assert statuses[-1] == 429, statuses  # first two reach the handler (409: test is published)
+
+    rate_limiter.reset()
+    monkeypatch.setattr(settings, "RATE_LIMIT_GENERAL", 3)
+    codes = [client.get("/api/auth/me", headers=tokens["teacher"]).status_code for _ in range(4)]
+    assert codes[:3] == [200, 200, 200] and codes[3] == 429
+    limited = client.get("/api/auth/me", headers=tokens["teacher"])
+    assert limited.headers.get("retry-after")
+    assert client.get("/api/health").status_code == 200  # health checks are never limited
+    rate_limiter.reset()

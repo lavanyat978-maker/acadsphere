@@ -21,7 +21,9 @@ os.environ.update(
         "GEN_INLINE": "false",
         "RATE_LIMIT_LOGIN": "100",
         "RATE_LIMIT_MFA": "100",
-        "RATE_LIMIT_GENERAL": "1000",
+        "RATE_LIMIT_GENERAL": "100000",
+        "RATE_LIMIT_GENERATION": "1000",
+        "RATE_LIMIT_UPLOAD": "1000",
         "RELEASE_WINDOW_MINUTES": "120",
     }
 )

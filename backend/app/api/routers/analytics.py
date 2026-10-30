@@ -53,4 +53,12 @@ def student_analytics(
             "Open the analytics for one of your practice tests instead.",
             code="USE_TEST_ANALYTICS",
         )
-    return engine.student_analytics(db, student_id)
+    from app.core.errors import NotFound
+    from app.models.tables import User
+
+    student = db.get(User, student_id)
+    if student is None or student.role != Role.STUDENT:
+        raise NotFound("Student")
+    result = engine.student_analytics(db, student_id)
+    result["student"] = {"id": student.id, "full_name": student.full_name, "email": student.email}
+    return result
