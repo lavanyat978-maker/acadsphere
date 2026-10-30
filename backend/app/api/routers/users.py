@@ -1,7 +1,7 @@
 """Account administration (HOD only)."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.deps import Principal, require_hod
@@ -38,6 +38,30 @@ def create_user(
     user, temporary = user_service.create_user(db, payload, actor=principal.user, ip=principal.ip)
     db.commit()
     return {"user": user_service.user_out(db, user), "temporary_password": temporary}
+
+
+@router.post("/import", status_code=201)
+async def import_users(
+    file: UploadFile = File(...),
+    principal: Principal = Depends(require_hod),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Bulk-create accounts from CSV. Validates every row first; all or nothing."""
+    from starlette.concurrency import run_in_threadpool
+
+    data = await file.read(2 * 1024 * 1024 + 1)
+    if len(data) > 2 * 1024 * 1024:
+        from app.core.errors import AppError
+
+        raise AppError("CSV_TOO_LARGE", "The CSV file must be under 2 MB.", 400)
+
+    def work() -> list[dict]:
+        rows = user_service.import_users_csv(db, principal.user, data, principal.ip)
+        db.commit()
+        return rows
+
+    created = await run_in_threadpool(work)
+    return {"created": created, "count": len(created)}
 
 
 @router.patch("/{user_id}", response_model=AdminUserOut)

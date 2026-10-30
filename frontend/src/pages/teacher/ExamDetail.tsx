@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
   Ban,
@@ -10,6 +10,7 @@ import {
   FileLock2,
   FileUp,
   Fingerprint,
+  Pencil,
   RotateCcw,
   ShieldCheck,
   Sparkles,
@@ -37,6 +38,7 @@ export function ExamDetail() {
   );
   const paper = useApi<SecurePaper>(exam.data?.paper_state ? `/exams/${examId}/paper` : null);
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
@@ -151,6 +153,11 @@ export function ExamDetail() {
           <div className="page-actions-inline">
             <Badge tone={statusTone(data.status)}>{titleCase(data.status)}</Badge>
             {paperState && <Badge tone={statusTone(paperState)} dot>{titleCase(paperState)}{data.paper_version ? ` · v${data.paper_version}` : ""}</Badge>}
+            {editable && isDraft && (
+              <Button variant="secondary" onClick={() => navigate(`/teacher/exams/${data.id}/edit`)} icon={<Pencil size={15} />}>
+                Edit
+              </Button>
+            )}
             {!uploaded && editable && isDraft && (
               <Button onClick={submitConfig} loading={busy} icon={<FileLock2 size={15} />}>
                 Freeze blueprint

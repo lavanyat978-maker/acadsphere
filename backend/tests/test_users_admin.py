@@ -233,3 +233,58 @@ def test_subject_admin_enrolment_and_topics(client: TestClient, tokens, seeded):
     assert client.delete(f"/api/subjects/{subject_id}/topics/{topic['id']}", headers=tokens["teacher"]).status_code == 200
     in_use = client.delete(f"/api/subjects/{subject_id}/topics/{seeded['topic_ids'][0]}", headers=tokens["teacher"])
     assert in_use.status_code == 409
+
+
+def test_totp_code_cannot_be_replayed(client: TestClient):
+    from app.core.security import hash_password, new_totp_secret, seal_secret
+    from app.models.enums import Role
+
+    secret = new_totp_secret()
+    with session_scope() as db:
+        db.add(
+            User(
+                email="replay.hod@test.demo",
+                full_name="Replay HOD",
+                role=Role.HOD,
+                password_hash=hash_password("TestPass#123"),
+                mfa_enabled=True,
+                mfa_secret_enc=seal_secret(secret),
+            )
+        )
+    code = pyotp.TOTP(secret).now()
+    first = _login(client, "replay.hod@test.demo", "TestPass#123").json()
+    ok = TestClient(client.app).post("/api/auth/mfa/verify", json={"mfa_token": first["mfa_token"], "code": code})
+    assert ok.status_code == 200
+    second = _login(client, "replay.hod@test.demo", "TestPass#123").json()
+    replay = TestClient(client.app).post("/api/auth/mfa/verify", json={"mfa_token": second["mfa_token"], "code": code})
+    assert replay.status_code == 401
+    # The demo helper hands out a code that has not been used yet.
+    fresh = TestClient(client.app).post("/api/auth/mfa/challenge-code", json={"mfa_token": second["mfa_token"]}).json()
+    assert fresh["code"] != code
+    assert TestClient(client.app).post(
+        "/api/auth/mfa/verify", json={"mfa_token": second["mfa_token"], "code": fresh["code"]}
+    ).status_code == 200
+
+
+def test_csv_import_is_all_or_nothing(client: TestClient, tokens):
+    bad = "email,full_name,role,subjects\nok1@test.demo,Okay One,STUDENT,CS901\nnot-an-email,Broken,STUDENT,\nok2@test.demo,Okay Two,WIZARD,\n"
+    response = client.post(
+        "/api/users/import", headers=tokens["hod"], files={"file": ("people.csv", bad.encode(), "text/csv")}
+    )
+    assert response.status_code == 422
+    assert {row["row"] for row in response.json()["details"]} == {3, 4}
+    assert all(row["email"] != "ok1@test.demo" for row in client.get("/api/users", headers=tokens["hod"]).json())
+
+    good = "﻿Email,Full_Name,Role,Department,Subjects\ncsv.a@test.demo,CSV Student A,,Computer Science,CS901\ncsv.t@test.demo,CSV Teacher,teacher,,cs901\n"
+    response = client.post(
+        "/api/users/import", headers=tokens["hod"], files={"file": ("people.csv", good.encode(), "text/csv")}
+    )
+    assert response.status_code == 201, response.text
+    created = {row["email"]: row for row in response.json()["created"]}
+    assert set(created) == {"csv.a@test.demo", "csv.t@test.demo"}
+    assert created["csv.t@test.demo"]["role"] == "TEACHER" and created["csv.a@test.demo"]["temporary_password"]
+    listed = {row["email"]: row for row in client.get("/api/users", headers=tokens["hod"]).json()}
+    assert listed["csv.a@test.demo"]["subject_ids"] and listed["csv.t@test.demo"]["must_change_password"]
+    assert client.post(
+        "/api/users/import", headers=tokens["teacher"], files={"file": ("p.csv", good.encode(), "text/csv")}
+    ).status_code == 403

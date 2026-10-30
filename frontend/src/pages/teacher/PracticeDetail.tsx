@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   Clock3,
   Eye,
+  Pencil,
   Plus,
   Send,
   Sparkles,
@@ -31,6 +32,10 @@ export function PracticeDetail() {
   const [tab, setTab] = useState<"questions" | "analytics">("questions");
   const [generateOpen, setGenerateOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  // When set, the question modal edits this question instead of adding a new one.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [details, setDetails] = useState({ title: "", description: "", duration_minutes: 30 });
   const [busy, setBusy] = useState(false);
   const [count, setCount] = useState(5);
   const [genDifficulty, setGenDifficulty] = useState("MEDIUM");
@@ -110,6 +115,58 @@ export function PracticeDetail() {
   const isDraft = data.status === "DRAFT";
   const untouched = data.attempt_count === 0;
 
+  const openAdd = () => {
+    setEditingId(null);
+    setQuestionText("");
+    setTopicId("");
+    setOptions([
+      { id: "a", text: "" },
+      { id: "b", text: "" },
+      { id: "c", text: "" },
+      { id: "d", text: "" },
+    ]);
+    setCorrect("a");
+    setExplanation("");
+    setMarks(1);
+    setQuestionDifficulty("MEDIUM");
+    setAddOpen(true);
+  };
+
+  const openEdit = (question: (typeof data.questions)[number]) => {
+    setEditingId(question.id);
+    setQuestionText(question.question_text);
+    setTopicId(question.topic_id);
+    const padded = [...question.options];
+    for (const id of ["a", "b", "c", "d"]) {
+      if (padded.length < 4 && !padded.some((option) => option.id === id)) padded.push({ id, text: "" });
+    }
+    setOptions(padded.slice(0, Math.max(4, question.options.length)));
+    setCorrect(question.correct_answers?.[0] ?? padded[0]?.id ?? "a");
+    setExplanation(question.explanation ?? "");
+    setMarks(question.marks);
+    setQuestionDifficulty(question.difficulty);
+    setAddOpen(true);
+  };
+
+  const openDetails = () => {
+    setDetails({ title: data.title, description: data.description, duration_minutes: data.duration_minutes });
+    setDetailsOpen(true);
+  };
+
+  const saveDetails = async () => {
+    setBusy(true);
+    try {
+      await api(`/practice/tests/${data.id}`, { method: "PATCH", body: details });
+      toast("Practice set updated.", "success");
+      setDetailsOpen(false);
+      test.reload();
+    } catch (err) {
+      toast([errorMessage(err), ...fieldErrors(err)].join(" "), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const addQuestion = async () => {
     if (!topicId) return toast("Choose a topic for the question.", "error");
     const payload: PracticeQuestionCreatePayload = {
@@ -125,8 +182,13 @@ export function PracticeDetail() {
     };
     setBusy(true);
     try {
-      await api(`/practice/tests/${data.id}/questions`, { method: "POST", body: [payload] });
-      toast("Question added.", "success");
+      if (editingId) {
+        await api(`/practice/tests/${data.id}/questions/${editingId}`, { method: "PUT", body: payload });
+        toast("Question updated.", "success");
+      } else {
+        await api(`/practice/tests/${data.id}/questions`, { method: "POST", body: [payload] });
+        toast("Question added.", "success");
+      }
       setAddOpen(false);
       setQuestionText("");
       setExplanation("");
@@ -170,6 +232,11 @@ export function PracticeDetail() {
             {editable && data.status === "ARCHIVED" && untouched && (
               <Button variant="ghost" onClick={() => setStatus("DRAFT")} loading={busy}>
                 Reopen draft
+              </Button>
+            )}
+            {editable && (untouched || data.status !== "PUBLISHED") && (
+              <Button variant="ghost" onClick={openDetails} icon={<Pencil size={15} />}>
+                Edit details
               </Button>
             )}
             <Badge tone={statusTone(data.status)}>{titleCase(data.status)}</Badge>
@@ -217,7 +284,7 @@ export function PracticeDetail() {
                 <p>Generate grounded single-choice questions from the syllabus, or add them manually.</p>
               </div>
               <div className="button-row">
-                <Button variant="secondary" icon={<Plus size={15} />} onClick={() => setAddOpen(true)}>Add manually</Button>
+                <Button variant="secondary" icon={<Plus size={15} />} onClick={openAdd}>Add manually</Button>
                 <Button icon={<Sparkles size={15} />} onClick={() => setGenerateOpen(true)}>Generate with AI</Button>
               </div>
             </Card>
@@ -238,6 +305,16 @@ export function PracticeDetail() {
                         <span className="muted">{question.marks} mark{question.marks === 1 ? "" : "s"}</span>
                       </div>
                     </div>
+                    {editable && isDraft && (
+                      <button
+                        className="icon-btn"
+                        aria-label={`Edit question ${index + 1}`}
+                        disabled={busy}
+                        onClick={() => openEdit(question)}
+                      >
+                        <Pencil size={15} />
+                      </button>
+                    )}
                     {editable && isDraft && (
                       <button
                         className="icon-btn danger"
@@ -362,15 +439,41 @@ export function PracticeDetail() {
       </Modal>
 
       <Modal
+        open={detailsOpen}
+        onClose={() => setDetailsOpen(false)}
+        title="Edit practice set"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setDetailsOpen(false)}>Cancel</Button>
+            <Button loading={busy} onClick={saveDetails}>Save</Button>
+          </>
+        }
+      >
+        <div className="form-grid">
+          <Field label="Title" className="span-2">
+            <Input value={details.title} onChange={(event) => setDetails({ ...details, title: event.target.value })} minLength={3} maxLength={200} />
+          </Field>
+          <Field label="Description" className="span-2">
+            <Textarea value={details.description} onChange={(event) => setDetails({ ...details, description: event.target.value })} rows={3} />
+          </Field>
+          <Field label="Duration (minutes)">
+            <Input type="number" min={1} max={240} value={details.duration_minutes} onChange={(event) => setDetails({ ...details, duration_minutes: Number(event.target.value) })} />
+          </Field>
+        </div>
+      </Modal>
+
+      <Modal
         open={addOpen}
         onClose={() => setAddOpen(false)}
-        title="Add a question"
+        title={editingId ? "Edit question" : "Add a question"}
         description="Single-choice questions only. Options and the correct answer appear to students after submission."
         width="640px"
         footer={
           <>
             <Button variant="ghost" onClick={() => setAddOpen(false)}>Cancel</Button>
-            <Button loading={busy} onClick={addQuestion} icon={<Plus size={15} />}>Add question</Button>
+            <Button loading={busy} onClick={addQuestion} icon={editingId ? <Pencil size={15} /> : <Plus size={15} />}>
+              {editingId ? "Save question" : "Add question"}
+            </Button>
           </>
         }
       >
