@@ -98,6 +98,25 @@ def extract_json(text: str) -> Any:
     raise LLMError("Model did not return parseable JSON")
 
 
+def _question_items(data: Any, what: str) -> list[dict[str, Any]]:
+    """Normalise a model reply into a list of question dicts.
+
+    The exam prompt asks for one bare question object; the practice prompt asks for
+    {"questions": [...]}. Models also wrap or unwrap these on their own, so accept
+    a list, a {"questions": [...]} object, or a single question object.
+    """
+    if isinstance(data, dict):
+        if isinstance(data.get("questions"), list):
+            data = data["questions"]
+        elif "question_text" in data:
+            data = [data]
+        else:
+            raise LLMError(f"The AI reply did not contain {what}.")
+    if not isinstance(data, list):
+        raise LLMError(f"Expected a JSON list of {what}.")
+    return [item for item in data if isinstance(item, dict)]
+
+
 class OpenAIProvider(LLMProvider):
     name = "openai-compatible"
     mode = "REAL_AI"
@@ -177,12 +196,7 @@ class OpenAIProvider(LLMProvider):
 
         system, user = build_generation_messages(spec, context)
         raw = self._chat(system, user)
-        data = extract_json(raw)
-        if isinstance(data, dict):
-            data = data.get("questions", [])
-        if not isinstance(data, list):
-            raise LLMError("Expected a JSON array of questions")
-        return [item for item in data if isinstance(item, dict)]
+        return _question_items(extract_json(raw), "questions")
 
     def judge_question(self, *, question: dict[str, Any], context_text: str) -> dict[str, Any]:
         from app.ai.prompts import build_judge_messages
@@ -205,12 +219,7 @@ class OpenAIProvider(LLMProvider):
 
         system, user = build_practice_messages(subject, topics, count, difficulty, context)
         raw = self._chat(system, user)
-        data = extract_json(raw)
-        if isinstance(data, dict):
-            data = data.get("questions", [])
-        if not isinstance(data, list):
-            raise LLMError("Expected a JSON array of practice questions")
-        return [item for item in data if isinstance(item, dict)]
+        return _question_items(extract_json(raw), "practice questions")
 
 
 class DemoProvider(LLMProvider):
